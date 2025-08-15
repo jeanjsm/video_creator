@@ -1,0 +1,10 @@
+# Preset para YouTube 1080p
+container: mp4
+vcodec: libx264
+acodec: aac
+crf: 23
+preset: medium
+audio_bitrate: 192k
+resolution: [1920, 1080]
+fps: 30
+description: "Configuração otimizada para upload no YouTube em 1080p"

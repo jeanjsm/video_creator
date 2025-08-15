@@ -1,0 +1,5 @@
+# Dependências do projeto Video Creator
+pydantic-settings>=2.0.0
+pytest>=7.0.0
+flet>=0.20.0
+# Vosk será adicionado futuramente para speech-to-text

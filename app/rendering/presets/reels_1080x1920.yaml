@@ -1,0 +1,10 @@
+# Preset para Instagram Reels
+container: mp4
+vcodec: libx264
+acodec: aac
+crf: 25
+preset: medium
+audio_bitrate: 128k
+resolution: [1080, 1920]
+fps: 30
+description: "Configuração para Instagram Reels e TikTok (vertical)"
