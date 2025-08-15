@@ -1,9 +1,15 @@
-# Script principal para criação de vídeos
+
+"""
+main.py — Interface/Adapter (Clean Architecture)
+------------------------------------------------
+Responsável por orquestrar a aplicação, ler argumentos, injetar dependências e chamar o core.
+Não contém lógica de negócio, apenas orquestração e interface (CLI).
+"""
 
 
 import argparse
-import json
 import os
+from infra.config import get_config
 from video_creator.core import criar_video
 
 def main():
@@ -16,16 +22,12 @@ def main():
     parser.add_argument('--saida', required=True, help='Arquivo de saída do vídeo (ex: video.mp4)')
     args = parser.parse_args()
 
-    # Lê configurações do arquivo config.json
-    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        segment_duration = config.get('segment_duration', 3)
-        pasta_imagens = config.get('image_source_dir', '')
-    else:
-        segment_duration = 3  # valor padrão
-        pasta_imagens = ''
+    # Lê configurações do arquivo config.json via camada infra
+    config = get_config()
+    segment_duration = config.get('segment_duration', 3)
+    pasta_imagens = config.get('image_source_dir', '')
+    ffmpeg_path = os.path.abspath(config.get('ffmpeg_path', os.path.join(os.path.dirname(__file__), '_internal', 'ffmpeg', 'bin', 'ffmpeg.exe')))
+    ffprobe_path = os.path.abspath(config.get('ffprobe_path', os.path.join(os.path.dirname(__file__), '_internal', 'ffmpeg', 'bin', 'ffprobe.exe')))
 
     # Busca todas as imagens da pasta configurada
     if pasta_imagens:
@@ -46,7 +48,9 @@ def main():
         segment_duration=segment_duration,
         transicao=transicao_tipo,
         efeito=args.efeito,
-        encoder=args.encoder
+        encoder=args.encoder,
+        ffmpeg_path=ffmpeg_path,
+        ffprobe_path=ffprobe_path
     )
 
 if __name__ == "__main__":

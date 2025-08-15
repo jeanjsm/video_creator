@@ -1,25 +1,116 @@
-# Funções principais para criação de vídeo (single pass para transições)
-# Atualizações nesta versão:
-# - Efeito "pêndulo": zoom preservado com CROP (em vez de scale final) e bug do rotate corrigido.
-# - Novo fluxo de transição "single pass" com concat demuxer + trim + xfade (sem fazer par-a-par).
-# - Cache de pré-render com hash corrigido (gravação do hash no final do processo).
-# - Flags de encoder adaptativas (GPU/CPU) via helper get_encoder_flags().
+# ==========================
+# Função principal de criação de vídeo (exportável)
+# ==========================
+
+def criar_video(audio_path, imagens, saida, segment_duration=3, transicao=None, efeito='fade', encoder='libx264', ffmpeg_path=None, ffprobe_path=None):
+    """
+    Função principal para criar vídeo sincronizado com narração e imagens.
+    ffmpeg_path e ffprobe_path são obrigatórios (injeção de dependência).
+    """
+    if ffmpeg_path is None or ffprobe_path is None:
+        raise ValueError('ffmpeg_path e ffprobe_path devem ser fornecidos')
+
+    # Descobre a duração do áudio
+    dur_audio = get_audio_duration(audio_path, ffprobe_path)
+    if dur_audio == 0:
+        print("Não foi possível obter a duração do áudio.")
+        return
+
+    # Ajuste de contagem de imagens
+    transition = min(1.0, segment_duration * 0.3) if transicao else 0
+    if transicao:
+        # Soma total: n*segment_duration - (n-1)*transition >= dur_audio
+        n_imagens = max(2, int((dur_audio + transition) / (segment_duration - transition)) + 2)
+    else:
+        n_imagens = int(dur_audio // segment_duration) + 1
+
+    imagens_repetidas = [imagens[i % len(imagens)] for i in range(n_imagens)]
+
+    if not transicao:
+        # Caminho simples (sem transição): concat demuxer de imagens estáticas
+        lista_imagens = 'imagens.txt'
+        with open(lista_imagens, 'w', encoding='utf-8') as f:
+            for img in imagens_repetidas:
+                f.write(f"file '{os.path.abspath(img)}'\n")
+                f.write(f"duration {segment_duration}\n")
+            f.write(f"file '{os.path.abspath(imagens_repetidas[-1])}'\n")
+        cmd = [
+            ffmpeg_path,
+            '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', lista_imagens,
+            '-i', audio_path,
+            '-c:v', encoder, *get_encoder_flags(encoder, framerate=30),
+            '-c:a', 'aac',
+            '-pix_fmt', 'yuv420p',
+            '-shortest',
+            '-movflags', '+faststart',
+            saida
+        ]
+        print(f"Executando: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            print(f"Vídeo gerado com sucesso: {saida}")
+        except subprocess.CalledProcessError as e:
+            print(f"Erro ao gerar vídeo: {e}")
+    else:
+        # Pré-renderiza segmentos únicos com efeito (garante mesma resolução/fps)
+        pre_dir = os.path.join(os.path.dirname(saida), 'pre_rendered_image_segments')
+        imagens_unicas = list(dict.fromkeys(imagens))
+        segment_map = {}
+
+        # Renderiza cada imagem única uma vez (com cache)
+        segment_files_unicos = pre_render_segments(imagens_unicas, segment_duration, pre_dir, efeito=efeito, encoder=encoder, ffmpeg_path=ffmpeg_path, ffprobe_path=ffprobe_path)
+        for img, seg in zip(imagens_unicas, segment_files_unicos):
+            segment_map[img] = seg
+
+        # Monta a lista de segmentos na ordem correta
+        segment_files = [segment_map[img] for img in imagens_repetidas]
+
+        # SINGLE PASS: concat demuxer + trim + xfade + áudio
+        try:
+            tipo_transicao = transicao if isinstance(transicao, str) else 'fade'
+            concat_with_transitions_singlepass(segment_files, audio_path=audio_path, saida=saida,
+                                               segment_duration=segment_duration,
+                                               ffmpeg_path=ffmpeg_path, encoder=encoder,
+                                               tipo_transicao=tipo_transicao,
+                                               transition=transition)
+            print(f"Vídeo gerado com sucesso: {saida}")
+        except subprocess.CalledProcessError as e:
+            print(f"Erro ao gerar vídeo: {e}")
+
+"""
+Módulo core (domínio) — Clean Architecture
+------------------------------------------
+Contém apenas lógica de negócio e manipulação de vídeo, SEM acesso direto a arquivos de configuração, disco, OS, etc.
+Todas as dependências externas (ffmpeg_path, ffprobe_path) são injetadas por parâmetro.
+Não acessar config.json ou recursos externos diretamente!
+"""
 
 import math
 import subprocess
 import os
 import shutil
+import shlex
 from pathlib import Path
 import json
 import hashlib
+
+def get_config():
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
 # ==========================
 # Utilitários de mídia
 # ==========================
 
-def get_audio_duration(audio_path):
-    """Retorna a duração do áudio em segundos usando ffprobe."""
-    ffprobe_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_internal', 'ffmpeg', 'bin', 'ffprobe.exe'))
+
+def get_audio_duration(audio_path, ffprobe_path):
+    """Retorna a duração do áudio em segundos usando ffprobe (ffprobe_path injetado)."""
     result = subprocess.run([
         ffprobe_path,
         '-v', 'error',
@@ -33,9 +124,9 @@ def get_audio_duration(audio_path):
         return 0
 
 
-def get_image_size(image_path: Path):
-    """Usa ffprobe para obter largura e altura da imagem"""
-    ffprobe_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_internal', 'ffmpeg', 'bin', 'ffprobe.exe'))
+
+def get_image_size(image_path: Path, ffprobe_path):
+    """Usa ffprobe para obter largura e altura da imagem (ffprobe_path injetado)."""
     cmd = [
         ffprobe_path, "-v", "error",
         "-select_streams", "v:0",
@@ -66,15 +157,18 @@ def get_encoder_flags(encoder: str, framerate: int):
         # AMD AMF
         return ['-quality', 'speed', '-g', str(framerate * 2)]
     return []
-
-
-# ==========================
+    # ...existing code...
 # Pré-render de segmentos (com cache)
 # ==========================
 
 def pre_render_segments(imagens, segment_duration, output_dir, efeito='fade', encoder='libx264'):
-    """Pré-renderiza cada imagem como um segmento .mp4 com efeito (fade, zoom, pendulo, simplezoom ou none) e encoder escolhido. Usa cache se os parâmetros não mudaram."""
-    ffmpeg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_internal', 'ffmpeg', 'bin', 'ffmpeg.exe'))
+    """Pré-renderiza cada imagem como um segmento .mp4 com efeito (fade, zoom, pendulo, simplezoom) e encoder escolhido. Usa cache se os parâmetros não mudaram."""
+def pre_render_segments(imagens, segment_duration, output_dir, efeito='fade', encoder='libx264', ffmpeg_path=None, ffprobe_path=None):
+    """Pré-renderiza cada imagem como um segmento .mp4 com efeito (fade, zoom, pendulo, simplezoom) e encoder escolhido. Usa cache se os parâmetros não mudaram."""
+    if ffmpeg_path is None:
+        raise ValueError('ffmpeg_path deve ser fornecido')
+    if ffprobe_path is None:
+        raise ValueError('ffprobe_path deve ser fornecido')
     framerate = 30
 
     # Gera hash dos parâmetros relevantes (ordem e caminhos normalizados)
@@ -225,7 +319,8 @@ def render_zoom(img, out_file, segment_duration, ffmpeg_path, encoder, framerate
 
 def render_pendulo(img, out_file, segment_duration, ffmpeg_path, encoder, framerate):
     """Efeito pêndulo com pré-zoom e CROP final (zoom visível)."""
-    w, h = get_image_size(img)
+def render_pendulo(img, out_file, segment_duration, ffmpeg_path, encoder, framerate, ffprobe_path):
+    w, h = get_image_size(img, ffprobe_path)
     r = h / w  # razão de aspecto
 
     strength, twist, speed, sharpen = 5, 5, 12, 30
@@ -358,86 +453,4 @@ def concat_with_transitions_singlepass(segment_files, audio_path, saida,
 # Função principal
 # ==========================
 
-def criar_video(audio_path, imagens, saida, segment_duration=3, transicao=None, efeito='fade', encoder='libx264'):
-    """
-    Cria um vídeo a partir de um arquivo de áudio e uma lista de imagens usando FFmpeg.
-    segment_duration: duração de cada imagem em segundos
-    O vídeo terá o mesmo tempo do áudio, repetindo as imagens se necessário.
-    Se transicao for diferente de None, aplica o tipo de transição escolhido entre as imagens em SINGLE PASS.
-    """
-    ffmpeg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_internal', 'ffmpeg', 'bin', 'ffmpeg.exe'))
-    if not os.path.exists(ffmpeg_path):
-        raise FileNotFoundError(f"FFmpeg não encontrado em {ffmpeg_path}")
-
-    # Descobre a duração do áudio
-    dur_audio = get_audio_duration(audio_path)
-    if dur_audio == 0:
-        print("Não foi possível obter a duração do áudio.")
-        return
-
-    # Ajuste de contagem de imagens
-    transition = min(1.0, segment_duration * 0.3) if transicao else 0
-    if transicao:
-        # Soma total: n*segment_duration - (n-1)*transition >= dur_audio
-        n_imagens = max(2, int((dur_audio + transition) / (segment_duration - transition)) + 2)
-    else:
-        n_imagens = int(dur_audio // segment_duration) + 1
-
-    imagens_repetidas = [imagens[i % len(imagens)] for i in range(n_imagens)]
-
-    if not transicao:
-        # Caminho simples (sem transição): concat demuxer de imagens estáticas
-        lista_imagens = 'imagens.txt'
-        with open(lista_imagens, 'w', encoding='utf-8') as f:
-            for img in imagens_repetidas:
-                f.write(f"file '{os.path.abspath(img)}'\n")
-                f.write(f"duration {segment_duration}\n")
-            f.write(f"file '{os.path.abspath(imagens_repetidas[-1])}'\n")
-        cmd = [
-            ffmpeg_path,
-            '-y',
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', lista_imagens,
-            '-i', audio_path,
-            '-c:v', encoder, *get_encoder_flags(encoder, framerate=30),
-            '-c:a', 'aac',
-            '-pix_fmt', 'yuv420p',
-            '-shortest',
-            '-movflags', '+faststart',
-            saida
-        ]
-        print(f"Executando: {' '.join(cmd)}")
-        try:
-            subprocess.run(cmd, check=True)
-            print(f"Vídeo gerado com sucesso: {saida}")
-        except subprocess.CalledProcessError as e:
-            print(f"Erro ao gerar vídeo: {e}")
-        finally:
-            if os.path.exists('imagens.txt'):
-                os.remove('imagens.txt')
-    else:
-        # Pré-renderiza segmentos únicos com efeito (garante mesma resolução/fps)
-        pre_dir = os.path.join(os.path.dirname(saida), 'pre_rendered_image_segments')
-        imagens_unicas = list(dict.fromkeys(imagens))
-        segment_map = {}
-
-        # Renderiza cada imagem única uma vez (com cache)
-        segment_files_unicos = pre_render_segments(imagens_unicas, segment_duration, pre_dir, efeito=efeito, encoder=encoder)
-        for img, seg in zip(imagens_unicas, segment_files_unicos):
-            segment_map[img] = seg
-
-        # Monta a lista de segmentos na ordem correta
-        segment_files = [segment_map[img] for img in imagens_repetidas]
-
-        # SINGLE PASS: concat demuxer + trim + xfade + áudio
-        try:
-            tipo_transicao = transicao if isinstance(transicao, str) else 'fade'
-            concat_with_transitions_singlepass(segment_files, audio_path=audio_path, saida=saida,
-                                               segment_duration=segment_duration,
-                                               ffmpeg_path=ffmpeg_path, encoder=encoder,
-                                               tipo_transicao=tipo_transicao,
-                                               transition=transition)
-            print(f"Vídeo gerado com sucesso: {saida}")
-        except subprocess.CalledProcessError as e:
-            print(f"Erro ao gerar vídeo: {e}")
+    # ...existing code...

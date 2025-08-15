@@ -11,5 +11,6 @@
     "speed_profile": "Qualidade (Padr\u00e3o)",
     "parallel_jobs": 3,
     "gpu_usage_percent": 90,
-    "ffprobe_path": "./ffmpeg/bin/ffmpeg.exe/_internal/ffmpeg/bin/ffprobe.exe"
+    "ffmpeg_path": "_internal/ffmpeg/bin/ffmpeg.exe",
+    "ffprobe_path": "_internal/ffmpeg/bin/ffprobe.exe"
 }
