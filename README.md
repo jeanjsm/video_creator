@@ -40,3 +40,5 @@ python main.py --audio narracao.mp3 --imagens img1.jpg img2.jpg img3.jpg --saida
 ---
 
 Sinta-se à vontade para sugerir melhorias ou funcionalidades!
+
+
