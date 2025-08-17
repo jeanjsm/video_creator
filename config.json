@@ -3,7 +3,7 @@
     "image_source_dir": "./arquivos_teste/1",
     "segment_duration": 23.0,
     "video_source_dir": "",
-    "transition": "circleopen",
+    "transition": "random",
     "image_filter": "Nenhum",
     "resolution": "854x480",
     "output_dir": "./output_videos",

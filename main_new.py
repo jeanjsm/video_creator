@@ -90,9 +90,9 @@ def main():
     )
     parser.add_argument(
         "--transicao",
-        choices=["fade", "smoothleft", "circleopen", "none"],
+        choices=["fade", "smoothleft", "circleopen", "zoomin", "none", "random"],
         default="none",
-        help="Tipo de transição entre imagens",
+        help="Tipo de transição entre imagens (ou 'random' para aleatório)",
     )
 
     # Música de fundo

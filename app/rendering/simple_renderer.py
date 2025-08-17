@@ -114,6 +114,7 @@ class SimpleRenderer:
 
         from ..infra.paths import ffmpeg_bin
         import subprocess
+        from app.plugins.builtin.transitions.registry import get_transition
 
         cmd = [str(ffmpeg_bin()), "-y"]
         for clip in clips:
@@ -128,17 +129,30 @@ class SimpleRenderer:
                 f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v{i}]"
             )
 
-        # Montar cadeia de xfade
+        # Montar cadeia de transições usando classes
+        import random
+        from app.plugins.builtin.transitions.registry import TRANSITIONS
+
+        transition_names = [k for k in TRANSITIONS.keys() if k != "none"]
+
         if len(clips) == 1:
             final_output = f"[v0]"
         else:
             prev = f"[v0]"
             for i in range(1, len(clips)):
-                # offset: início da transição
                 offset = (segment_duration - transition_duration) * i
-                filter_parts.append(
-                    f"{prev}[v{i}]xfade=transition={transition}:duration={transition_duration}:offset={offset}[x{i}]"
+                if transition == "random":
+                    tname = random.choice(transition_names)
+                    transition_obj = get_transition(tname)
+                    self.logger.info(
+                        f"Transição aleatória escolhida para par {i}: {tname}"
+                    )
+                else:
+                    transition_obj = get_transition(transition)
+                filter_str = transition_obj.build_filter(
+                    duration=transition_duration, offset=offset
                 )
+                filter_parts.append(f"{prev}[v{i}]{filter_str}[x{i}]")
                 prev = f"[x{i}]"
             final_output = prev
 
