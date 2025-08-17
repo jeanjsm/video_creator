@@ -8,11 +8,13 @@ Video builder (FULL, clean)
 - Código limpo e consistente (sem blocos duplicados/quebrados)
 """
 
+
 import os
 import math
 import json
 import shutil
 import subprocess
+from app.infra.logging import get_logger
 
 # ==========================
 # Utilitários de mídia
@@ -508,6 +510,13 @@ def criar_video(
     capa_posicao="centro",
     overlay_chromas=None,
 ):
+    logger = get_logger("criar_video")
+    logger.info(
+        "Iniciando criação do vídeo: saída=%s, imagens=%d, áudio=%s",
+        saida,
+        len(imagens),
+        audio_path,
+    )
     ffmpeg_path = _resolve_bin("ffmpeg", ffmpeg_path)
     ffprobe_path = _resolve_bin("ffprobe", ffprobe_path)
 
@@ -545,6 +554,7 @@ def criar_video(
 
         # Logo (abaixo da capa)
         if logo_path:
+            logger.info("Adicionando logo: %s", logo_path)
             logo_input_idx = next_input_idx
             overlay_inputs += ["-i", logo_path]
             next_input_idx += 1
@@ -561,6 +571,7 @@ def criar_video(
             for ov in overlays:
                 if not ov.get("path"):
                     continue
+                logger.info("Adicionando overlay: %s", ov["path"])
                 ov_path = ov["path"]
                 ov_opac = float(ov.get("opacidade", 1.0))
                 is_video = os.path.splitext(ov_path)[1].lower() in {
@@ -589,6 +600,7 @@ def criar_video(
                 cpath = chroma.get("path")
                 if not cpath:
                     continue
+                logger.info("Adicionando overlay chroma: %s", cpath)
                 c_start = float(chroma.get("start", 0))
                 c_opac = float(chroma.get("opacidade", chroma.get("opacity", 1.0)))
                 c_tol = float(chroma.get("tolerancia", chroma.get("tolerance", 0.2)))
@@ -883,9 +895,10 @@ def criar_video(
         cmd += ["-t", str(dur_audio)]
     cmd += ["-shortest", "-movflags", "+faststart", saida]
 
-    subprocess.run(cmd, check=True)
-
+    logger.info("Comando FFmpeg: %s", " ".join(map(str, cmd)))
     try:
-        os.remove(temp_video)
-    except Exception:
-        pass
+        subprocess.run(cmd, check=True)
+        logger.info("Vídeo criado com sucesso: %s", saida)
+    except Exception as e:
+        logger.error("Erro ao executar FFmpeg: %s", e, exc_info=True)
+        raise

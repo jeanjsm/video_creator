@@ -45,8 +45,8 @@ def main():
     parser.add_argument(
         "--capa_posicao",
         choices=["centro", "top_left", "top_right", "bottom_left", "bottom_right"],
-        default="centro",
-        help="Posição da capa (padrão: centro)",
+        default="bottom_right",
+        help="Posição da capa (padrão: bottom_right)",
     )
     parser.add_argument(
         "--audio", required=True, help="Arquivo de áudio da narração (ex: narracao.mp3)"
@@ -123,6 +123,7 @@ def main():
     # Lê configurações do arquivo config.json via camada infra
     config = get_config()
     segment_duration = config.get("segment_duration", 3)
+    logging.debug(f"[DEBUG main.py] segment_duration from config: {segment_duration}")
     pasta_imagens = config.get("image_source_dir", "")
     ffmpeg_path = os.path.abspath(
         config.get(

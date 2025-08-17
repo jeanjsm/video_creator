@@ -9,6 +9,15 @@ from typing import Literal, Mapping, Any, Protocol
 
 
 @dataclass(frozen=True)
+class EffectRef:
+    """Referência a um efeito aplicado em um clipe"""
+
+    name: str
+    params: Mapping[str, Any]
+    target: Literal["video", "audio", "both"] = "video"
+
+
+@dataclass(frozen=True)
 class EffectDescriptor:
     """Descritor de um efeito disponível no sistema"""
 

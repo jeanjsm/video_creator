@@ -62,6 +62,7 @@ class RenderSettings:
     preset: str  # "medium"
     audio_bitrate: str  # "192k"
     hwaccel: str | None = None  # "cuda"|"qsv"|"vaapi"|None
+    ffmpeg_path: str = "ffmpeg"  # Caminho para o executável FFmpeg
 
 
 @dataclass
