@@ -206,3 +206,5 @@ __marimo__/
 output_videos/
 arquivos_teste/
 _internal/
+
+.idea

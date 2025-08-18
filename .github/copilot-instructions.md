@@ -420,3 +420,11 @@ Música de fundo com ducking simples.
 Autosave do projeto + presets em YAML.
 
 Packaging (PyInstaller onedir) incluindo FFmpeg vendorizado.
+
+
+O mais importante é garantir que a arquitetura esteja bem definida e que cada componente tenha responsabilidades claras. Isso facilitará a manutenção e a evolução do sistema ao longo do tempo.
+Não hesite em refatorar e melhorar o código à medida que avança.
+Nunca comprometa a qualidade do código em nome da velocidade. É melhor fazer as coisas corretamente da primeira vez.
+Nunca adicione código desnecessário ou redundante.
+Nunca escreva código que não seja testável.
+Nunca deixe código quebrado.

@@ -168,32 +168,25 @@ class VideoCreationService:
 
         # Adicionar overlays de vídeo se especificado (apenas no primeiro clip)
         if request.overlays and index == 0:
+            from app.plugins.builtin.effects.overlay import OverlayEffect
+
             for i, overlay in enumerate(request.overlays):
+                overlay_effect = OverlayEffect(
+                    {
+                        "path": overlay["path"],
+                        "opacity": overlay.get("opacidade", 1.0),
+                        "position": overlay.get("position", "center"),
+                        "scale": overlay.get("scale", 1.0),
+                    }
+                )
                 effects.append(
                     EffectRef(
                         name="overlay",
                         params={
-                            "path": overlay["path"],
-                            "opacity": overlay.get("opacidade", 1.0),
-                        },
-                    )
-                )
-
-        # Adicionar overlays chromakey de vídeo se especificado (apenas no primeiro clip)
-        if request.overlays_chromakey and index == 0:
-            self.logger.info(
-                f"[DEBUG] Adicionando {len(request.overlays_chromakey)} overlay(s) chromakey ao primeiro clip"
-            )
-            for overlay in request.overlays_chromakey:
-                self.logger.info(f"[DEBUG] Overlay chromakey: {overlay}")
-                effects.append(
-                    EffectRef(
-                        name="overlay_chromakey",
-                        params={
-                            "path": overlay["path"],
-                            "start": overlay.get("start", 0.0),
-                            "position": overlay.get("position", "center"),
-                            "chromakey": overlay.get("chromakey", None),
+                            "path": overlay_effect.path,
+                            "opacity": overlay_effect.opacity,
+                            "position": overlay_effect.position,
+                            "scale": overlay_effect.scale,
                         },
                     )
                 )

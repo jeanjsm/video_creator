@@ -13,7 +13,7 @@
     "gpu_usage_percent": 90,
     "overlay_chromas": [
         {
-            "path": "./arquivos_teste/overlay_chroma.mp4",
+            "path": "./arquivos_teste/chroma.mp4",
             "start": 5,
             "opacity": 1,
             "tolerance": 0.2,

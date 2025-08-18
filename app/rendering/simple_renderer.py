@@ -4,6 +4,7 @@ SimpleRenderer - Renderizador que segue Clean Architecture
 Pipeline: Timeline -> FilterGraph -> FFmpeg Command -> Execution
 """
 
+
 from pathlib import Path
 from typing import List, Optional
 import tempfile
@@ -16,6 +17,9 @@ from ..infra.paths import ffmpeg_bin
 from .graph_builder import GraphBuilder, FilterGraph
 from .cli_builder import CliBuilder
 from .runner import Runner
+from app.plugins.builtin.effects.overlay import OverlayEffect
+from app.plugins.builtin.effects.logo import LogoEffect
+from app.plugins.builtin.effects.cover import CoverEffect
 
 
 class SimpleRenderer:
@@ -324,7 +328,7 @@ class SimpleRenderer:
         visual_effects = []
         if video_track and video_track.clips:
             for effect in video_track.clips[0].effects:
-                if effect.name in ["logo", "overlay", "cover", "overlay_chromakey"]:
+                if effect.name in ["logo", "overlay", "cover"]:
                     visual_effects.append(effect)
 
         if visual_effects:
@@ -581,133 +585,44 @@ class SimpleRenderer:
         # Aplicar efeitos visuais em ordem: overlay -> logo -> capa
         for effect in visual_effects:
             if effect.name == "overlay" and effect.name in effect_inputs:
-                # Overlay de vídeo no centro (com loop já configurado no input)
+                # Usar OverlayEffect para gerar o filtergraph do overlay
                 input_idx = effect_inputs[effect.name]
-                opacity = effect.params.get("opacity", 1.0)
                 overlay_input = f"[{input_idx}:v]"
-                if opacity < 1.0:
-                    filter_parts.append(
-                        f"{overlay_input}format=rgba,colorchannelmixer=aa={opacity}[overlay_alpha]"
-                    )
-                    overlay_input = "[overlay_alpha]"
-                filter_parts.append(
-                    f"{current_video}{overlay_input}overlay=(W-w)/2:(H-h)/2[overlay_out]"
+                overlay_effect = OverlayEffect(effect.params)
+                input_label = current_video.strip("[]")
+                overlay_label = overlay_input.strip("[]")
+                output_label = "overlay_out"
+                filter_snippet = overlay_effect.build_filter(
+                    input_label, overlay_label, output_label
                 )
-                current_video = "[overlay_out]"
+                filter_parts.append(filter_snippet)
+                current_video = f"[{output_label}]"
             elif effect.name == "logo" and effect.name in effect_inputs:
-                # Logo com posicionamento específico
+                # Usar LogoEffect para gerar o filtergraph do logo
                 input_idx = effect_inputs[effect.name]
-                position = effect.params.get("position", "top_right")
-                scale = effect.params.get("scale", 0.15)
-
-                position_map = {
-                    "top_left": "20:20",
-                    "top_right": "W-w-20:20",
-                    "bottom_left": "20:H-h-20",
-                    "bottom_right": "W-w-20:H-h-20",
-                    "center": "(W-w)/2:(H-h)/2",
-                }
-                pos = position_map.get(position, "W-w-20:20")
-
-                # Redimensionar logo e aplicar overlay
-                filter_parts.append(
-                    f"[{input_idx}:v]scale=iw*{scale}:ih*{scale}[logo_scaled]"
+                logo_input = f"[{input_idx}:v]"
+                logo_effect = LogoEffect(effect.params)
+                input_label = current_video.strip("[]")
+                logo_label = logo_input.strip("[]")
+                output_label = "logo_out"
+                filter_snippet = logo_effect.build_filter(
+                    input_label, logo_label, output_label
                 )
-                filter_parts.append(
-                    f"{current_video}[logo_scaled]overlay={pos}[logo_out]"
-                )
-                current_video = "[logo_out]"
+                filter_parts.append(filter_snippet)
+                current_video = f"[{output_label}]"
             elif effect.name == "cover" and effect.name in effect_inputs:
-                # Capa com posicionamento específico
+                # Usar CoverEffect para gerar o filtergraph da capa
                 input_idx = effect_inputs[effect.name]
-                position = effect.params.get("position", "center")
-                size = effect.params.get("size", 1.0)
-                opacity = effect.params.get("opacity", 1.0)
-
-                self.logger.info(
-                    f"[DEBUG] Valor recebido para position da capa: {position}"
+                cover_input = f"[{input_idx}:v]"
+                cover_effect = CoverEffect(effect.params)
+                input_label = current_video.strip("[]")
+                cover_label = cover_input.strip("[]")
+                output_label = "cover_out"
+                filter_snippet = cover_effect.build_filter(
+                    input_label, cover_label, output_label
                 )
-
-                position_map = {
-                    "center": "(W-w)/2:(H-h)/2",
-                    "top_left": "20:20",
-                    "top_right": "W-w-20:20",
-                    "bottom_left": "20:H-h-20",
-                    "bottom_right": "W-w-20:H-h-20",
-                }
-                if position not in position_map:
-                    self.logger.warning(
-                        f"Posição de capa não reconhecida: {position}. Usando center."
-                    )
-                pos = position_map.get(position, position_map["center"])
-
-                # Redimensionar capa e aplicar overlay
-                if size != 1.0:
-                    filter_parts.append(
-                        f"[{input_idx}:v]scale=iw*{size}:ih*{size}[cover_scaled]"
-                    )
-                    cover_input = "[cover_scaled]"
-                else:
-                    cover_input = f"[{input_idx}:v]"
-
-                filter_parts.append(
-                    f"{current_video}{cover_input}overlay={pos}[cover_out]"
-                )
-                current_video = "[cover_out]"
-
-        # Overlays chromakey: aplicar todos em sequência (após overlays normais, logo, capa)
-        if "overlay_chromakey" in effect_inputs:
-            for idx, effect in effect_inputs["overlay_chromakey"]:
-                start = float(effect.params.get("start", 0.0))
-                chromakey = effect.params.get("chromakey")
-                position = effect.params.get("position", "center")
-                # Descobrir duração do overlay
-                overlay_path = effect.params.get("path")
-                overlay_duration = (
-                    self._get_video_duration_legacy(Path(overlay_path)) or 1.0
-                )
-                end = start + overlay_duration
-
-                self.logger.info(f"[DEBUG CHROMAKEY] Overlay: {overlay_path}")
-                self.logger.info(
-                    f"[DEBUG CHROMAKEY] Start na timeline do vídeo base: {start}s"
-                )
-                self.logger.info(
-                    f"[DEBUG CHROMAKEY] Duração do overlay: {overlay_duration}s"
-                )
-                self.logger.info(
-                    f"[DEBUG CHROMAKEY] End na timeline do vídeo base: {end}s"
-                )
-                self.logger.info(
-                    f"[DEBUG CHROMAKEY] Intervalo ativo: [{start}s, {end}s)"
-                )
-                self.logger.info(
-                    f"[DEBUG CHROMAKEY] Durante esse intervalo, overlay toca de 0s até {overlay_duration}s"
-                )
-                # Posição
-                position_map = {
-                    "center": "(W-w)/2:(H-h)/2",
-                    "top_left": "20:20",
-                    "top_right": "W-w-20:20",
-                    "bottom_left": "20:H-h-20",
-                    "bottom_right": "W-w-20:H-h-20",
-                }
-                pos = position_map.get(position, "(W-w)/2:(H-h)/2")
-                overlay_input = f"[{idx}:v]"
-                # Resetar PTS para garantir que o overlay sempre comece do t=0 quando aplicado
-                filter_parts.append(f"{overlay_input}setpts=PTS-STARTPTS[reset{idx}]")
-                overlay_input = f"[reset{idx}]"
-                # Chromakey
-                if chromakey:
-                    filter_parts.append(
-                        f"{overlay_input}chromakey={chromakey}:0.1:0.2[ckey{idx}]"
-                    )
-                    overlay_input = f"[ckey{idx}]"
-                # Overlay com enable - agora o overlay sempre começa do seu t=0 quando enable=true
-                filter_parts.append(
-                    f"{current_video}{overlay_input}overlay={pos}:enable='between(t,{start},{end})'[overlay_ckey{idx}]"
-                )
-                current_video = f"[overlay_ckey{idx}]"
+                filter_parts.append(filter_snippet)
+                current_video = f"[{output_label}]"
 
         # Se há filtros visuais, definir saída de vídeo
         if filter_parts:
