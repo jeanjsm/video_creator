@@ -112,6 +112,21 @@ class SimpleRenderer:
             f"Criando slideshow com transição '{transition}' entre {len(clips)} imagens"
         )
 
+        # Carregar resolução do config.json
+        import json
+
+        config_path = Path(__file__).parents[2] / "config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+            resolution_str = config_data.get("resolution", "1280x720")
+        else:
+            resolution_str = "1280x720"
+        try:
+            width, height = map(int, resolution_str.lower().split("x"))
+        except Exception:
+            width, height = 1280, 720
+
         transition_duration = 1.0  # padrão 1s
         segment_duration = (clips[0].out_ms - clips[0].in_ms) / 1000.0
         if segment_duration > 2:
@@ -128,10 +143,10 @@ class SimpleRenderer:
             )
 
         filter_parts = []
-        # Normalizar todas as imagens
+        # Normalizar todas as imagens para a resolução do config
         for i in range(len(clips)):
             filter_parts.append(
-                f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v{i}]"
+                f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[v{i}]"
             )
 
         # Montar cadeia de transições usando classes
