@@ -11,14 +11,14 @@
     "speed_profile": "Qualidade (Padr\u00e3o)",
     "parallel_jobs": 3,
     "gpu_usage_percent": 90,
-    "overlay_chromas": [
+    "chromas": [
         {
             "path": "./arquivos_teste/chroma.mp4",
             "start": 5,
             "opacity": 1,
             "tolerance": 0.2,
             "position": "bottom_center",
-            "size": 0.5
+            "size": 0.2
         }
     ],
     "ffmpeg_path": "_internal/ffmpeg/bin/ffmpeg.exe",

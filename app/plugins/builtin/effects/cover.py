@@ -19,7 +19,7 @@ class CoverEffect:
             "top_left": "20:20",
             "top_right": "W-w-20:20",
             "bottom_left": "20:H-h-20",
-            "bottom_right": "W-w-20:H-h-20",
+            "bottom_right": "W-w-2:H-h-2",
         }
         pos = position_map.get(self.position, position_map["center"])
         # Redimensionar capa

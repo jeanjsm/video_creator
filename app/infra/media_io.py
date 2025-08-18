@@ -1,3 +1,34 @@
+import json
+import subprocess
+from pathlib import Path
+
+
+def has_audio_stream(file_path: Path) -> bool:
+    """Retorna True se o arquivo possui stream de áudio."""
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_bin(),
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "json",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        return bool(data.get("streams"))
+    except Exception:
+        return False
+
+
 # -*- coding: utf-8 -*-
 """
 Serviços de mídia/IO para FFprobe e operações de arquivo

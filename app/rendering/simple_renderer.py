@@ -20,6 +20,7 @@ from .runner import Runner
 from app.plugins.builtin.effects.overlay import OverlayEffect
 from app.plugins.builtin.effects.logo import LogoEffect
 from app.plugins.builtin.effects.cover import CoverEffect
+from app.plugins.builtin.effects.chroma_overlay import ChromaOverlayEffect
 
 
 class SimpleRenderer:
@@ -189,116 +190,9 @@ class SimpleRenderer:
                     subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                 ),
             )
-            if result.returncode == 0:
-                self.logger.info("Slideshow com transição criado com sucesso")
-            else:
-                self.logger.error(f"Erro no slideshow com transição: {result.stderr}")
-                raise RuntimeError(f"Falha na criação do slideshow: {result.stderr}")
-
-        except subprocess.TimeoutExpired:
-            self.logger.error("Timeout na criação do slideshow simples")
-            raise RuntimeError("Timeout na criação do slideshow")
         except Exception as e:
-            self.logger.error(f"Erro inesperado no slideshow: {e}")
-            raise RuntimeError(f"Erro na criação do slideshow: {e}")
-
-    def _create_concat_slideshow(
-        self, clips: List[Clip], output_path: Path, settings: RenderSettings
-    ):
-        """Cria slideshow usando concat demuxer com pipeline da arquitetura"""
-
-        self.logger.info(
-            f"Criando slideshow com concat demuxer para {len(clips)} imagens"
-        )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            # Criar vídeos individuais para cada imagem
-            video_files = []
-            # Converter imagens para vídeos individuais usando arquitetura
-            video_files = []
-            for i, clip in enumerate(clips):
-                video_file = temp_path / f"clip_{i}.mp4"
-                duration = (clip.out_ms - clip.in_ms) / 1000.0
-
-                # Usar CliBuilder para comando de conversão
-                # Debug: registrar tipo/atributos do CliBuilder para diagnosticar possíveis problemas
-                try:
-                    self.logger.debug("CliBuilder instance: %s", type(self.cli_builder))
-                    self.logger.debug(
-                        "CliBuilder attrs: %s",
-                        [n for n in dir(self.cli_builder) if not n.startswith("_")],
-                    )
-
-                    # Defensive: fetch method via getattr so we can log and fail loudly
-                    method = getattr(
-                        self.cli_builder, "make_image_to_video_command", None
-                    )
-                    self.logger.debug("make_image_to_video_command attr: %s", method)
-                    if not callable(method):
-                        # Log detailed diagnostics to help root-cause intermittent attribute errors
-                        self.logger.error(
-                            "CliBuilder missing make_image_to_video_command - type=%s module=%s repr=%s attrs=%s",
-                            type(self.cli_builder),
-                            getattr(type(self.cli_builder), "__module__", None),
-                            repr(self.cli_builder),
-                            [n for n in dir(self.cli_builder) if not n.startswith("_")],
-                        )
-                        raise AttributeError(
-                            "CliBuilder instance has no callable 'make_image_to_video_command'. See logs for diagnostics."
-                        )
-
-                    cmd = method(clip.media_path, video_file, duration, settings)
-                except Exception as e:
-                    # Registrar erro detalhado e re-levantar para ficar visível no log
-                    self.logger.error(
-                        "Falha ao construir comando de conversao de imagem: %s",
-                        e,
-                        exc_info=True,
-                    )
-                    raise
-
-                # Executar com Runner
-                try:
-                    # Timeout reduzido para conversões de imagem individuais
-                    self.runner.run_image_conversion(cmd, timeout=60)
-                except subprocess.CalledProcessError as e:
-                    self.logger.error(
-                        f"Erro ao converter imagem {clip.media_path}: {e.stderr}"
-                    )
-                    raise RuntimeError(f"Falha na conversão de imagem: {e.stderr}")
-                except subprocess.TimeoutExpired:
-                    self.logger.error(f"Timeout na conversão de {clip.media_path}")
-                    raise RuntimeError(f"Timeout na conversão de imagem")
-                except RuntimeError as e:
-                    # Re-propagar erros do Runner
-                    self.logger.error(f"Erro do Runner: {e}")
-                    raise e
-
-                video_files.append(video_file)
-
-            # Concatenar vídeos usando arquitetura
-            if len(video_files) > 1:
-                # Usar CliBuilder para comando de concat
-                cmd = self.cli_builder.make_concat_command(
-                    video_files, output_path, settings
-                )
-
-                # Executar com Runner
-                try:
-                    self.runner.run_concat(cmd, timeout=120)
-                except subprocess.CalledProcessError as e:
-                    self.logger.error(f"Erro na concatenação: {e.stderr}")
-                    raise RuntimeError(f"Falha na concatenação: {e.stderr}")
-                except subprocess.TimeoutExpired:
-                    self.logger.error("Timeout na concatenação")
-                    raise RuntimeError("Timeout na concatenação de vídeos")
-            else:
-                # Apenas um vídeo, copiar
-                import shutil
-
-                shutil.copy2(video_files[0], output_path)
+            self.logger.error(f"Erro ao criar slideshow: {e}")
+            raise RuntimeError(f"Erro ao criar slideshow: {e}")
 
     def _add_audio_and_effects(
         self,
@@ -585,7 +479,6 @@ class SimpleRenderer:
         # Aplicar efeitos visuais em ordem: overlay -> logo -> capa
         for effect in visual_effects:
             if effect.name == "overlay" and effect.name in effect_inputs:
-                # Usar OverlayEffect para gerar o filtergraph do overlay
                 input_idx = effect_inputs[effect.name]
                 overlay_input = f"[{input_idx}:v]"
                 overlay_effect = OverlayEffect(effect.params)
@@ -598,7 +491,6 @@ class SimpleRenderer:
                 filter_parts.append(filter_snippet)
                 current_video = f"[{output_label}]"
             elif effect.name == "logo" and effect.name in effect_inputs:
-                # Usar LogoEffect para gerar o filtergraph do logo
                 input_idx = effect_inputs[effect.name]
                 logo_input = f"[{input_idx}:v]"
                 logo_effect = LogoEffect(effect.params)
@@ -611,7 +503,6 @@ class SimpleRenderer:
                 filter_parts.append(filter_snippet)
                 current_video = f"[{output_label}]"
             elif effect.name == "cover" and effect.name in effect_inputs:
-                # Usar CoverEffect para gerar o filtergraph da capa
                 input_idx = effect_inputs[effect.name]
                 cover_input = f"[{input_idx}:v]"
                 cover_effect = CoverEffect(effect.params)
@@ -624,6 +515,37 @@ class SimpleRenderer:
                 filter_parts.append(filter_snippet)
                 current_video = f"[{output_label}]"
 
+        # Integrar chroma overlays do config.json
+        import json
+        from app.infra.media_io import has_audio_stream
+
+        config_path = Path(__file__).parents[2] / "config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+            chromas = config_data.get("chromas", [])
+            for idx, chroma in enumerate(chromas):
+                chroma_effect = ChromaOverlayEffect(chroma)
+                chroma_path = chroma.get("path")
+                if chroma_path:
+                    cmd.extend(["-i", str(chroma_path)])
+                    chroma_video_label = f"{current_video.strip('[]')}"
+                    chroma_overlay_label = f"{input_counter}:v"
+                    v_out = f"chroma_v{idx}"
+                    a_out = f"chroma_a{idx}"
+                    # Sempre remover o áudio do chroma overlay: nunca adicionar [N:a] do chroma
+                    filter_snippet = chroma_effect.build_filter(
+                        chroma_video_label,
+                        chroma_overlay_label,
+                        None,
+                        None,
+                        v_out,
+                        None,
+                    )
+                    filter_parts.append(filter_snippet)
+                    current_video = f"[{v_out}]"
+                    input_counter += 1
+
         # Se há filtros visuais, definir saída de vídeo
         if filter_parts:
             video_output = current_video
@@ -631,29 +553,42 @@ class SimpleRenderer:
             video_output = "0:v"
 
         # Filtro de áudio (mix)
-        if len(audio_inputs) == 1:
-            audio_output = f"{audio_inputs[0]}:a"
-        elif len(audio_inputs) > 1:
-            # Múltiplos áudios - mix
-            for i, input_idx in enumerate(audio_inputs):
-                volume = (
-                    "1.0" if i == 0 else "0.2"
-                )  # Primeiro áudio (narração) volume normal, outros baixos
-                filter_parts.append(f"[{input_idx}:a]volume={volume}[a{i}]")
+        chroma_audio_output = None
+        chroma_present = False
+        # Detectar se algum filter_parts contém chroma_a (áudio do chroma)
+        for part in filter_parts:
+            if "chroma_a" in part:
+                chroma_present = True
+                # Pega o último label de chroma_a gerado
+                import re
 
-            mix_inputs = "".join([f"[a{i}]" for i in range(len(audio_inputs))])
-            filter_parts.append(
-                f"{mix_inputs}amix=inputs={len(audio_inputs)}:duration=first[aout]"
-            )
-            audio_output = "[aout]"
-        else:
-            audio_output = None
+                m = re.findall(r"\[chroma_a(\d+)\]", part)
+                if m:
+                    chroma_audio_output = f"[chroma_a{m[-1]}]"
+                else:
+                    chroma_audio_output = "[chroma_a0]"
+        if not chroma_present:
+            if len(audio_inputs) == 1:
+                audio_output = f"{audio_inputs[0]}:a"
+            elif len(audio_inputs) > 1:
+                for i, input_idx in enumerate(audio_inputs):
+                    volume = "1.0" if i == 0 else "0.2"
+                    filter_parts.append(f"[{input_idx}:a]volume={volume}[a{i}]")
+                mix_inputs = "".join([f"[a{i}]" for i in range(len(audio_inputs))])
+                filter_parts.append(
+                    f"{mix_inputs}amix=inputs={len(audio_inputs)}:duration=first[aout]"
+                )
+                audio_output = "[aout]"
+            else:
+                audio_output = None
 
         # Aplicar filtros se necessário
         if filter_parts:
             cmd.extend(["-filter_complex", ";".join(filter_parts)])
             cmd.extend(["-map", video_output])
-            if audio_output:
+            if chroma_present and chroma_audio_output:
+                cmd.extend(["-map", chroma_audio_output])
+            elif not chroma_present and audio_output:
                 cmd.extend(["-map", audio_output])
         else:
             # Sem filtros, mapear diretamente

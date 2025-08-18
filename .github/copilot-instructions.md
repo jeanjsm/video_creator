@@ -428,3 +428,5 @@ Nunca comprometa a qualidade do código em nome da velocidade. É melhor fazer a
 Nunca adicione código desnecessário ou redundante.
 Nunca escreva código que não seja testável.
 Nunca deixe código quebrado.
+Sempre valide se o arquivo que foi alterado não quebrou os testes.
+Sempre valide se o arquivo que foi alterado não está quebrado, sem compilar ou com a identação incorreta.
