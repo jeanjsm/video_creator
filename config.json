@@ -5,10 +5,10 @@
     "video_source_dir": "",
     "transition": "random",
     "image_filter": "Nenhum",
-    "resolution": "854x480",
+    "resolution": "1920x1080",
     "output_dir": "./output_videos",
     "encoder": "h264_nvenc",
-    "speed_profile": "Qualidade (Padr\u00e3o)",
+    "speed_profile": "Qualidade (Padrão)",
     "parallel_jobs": 3,
     "gpu_usage_percent": 90,
     "chromas": [
@@ -22,5 +22,72 @@
         }
     ],
     "ffmpeg_path": "_internal/ffmpeg/bin/ffmpeg.exe",
-    "ffprobe_path": "_internal/ffmpeg/bin/ffprobe.exe"
+    "ffprobe_path": "_internal/ffmpeg/bin/ffprobe.exe",
+    "subtitles": {
+        "enabled": true,
+        "vosk_model_path": "./vosk-model",
+        "confidence_threshold": 0.5,
+        "max_segment_duration": 4.0,
+        "style": {
+            "font_family": "Roboto",
+            "font_size": 24,
+            "font_color": "white",
+            "position": "center",
+            "margin_bottom": 50,
+            "max_chars_per_line": 30,
+            "max_words_per_line": 4,
+            "outline_width": 2,
+            "outline_color": "black"
+        },
+        "presets": {
+            "youtube": {
+                "font_size": 28,
+                "font_color": "white",
+                "background_color": "black@0.7",
+                "position": "bottom_center",
+                "margin_bottom": 60,
+                "outline_width": 3,
+                "font_family": "Arial"
+            },
+            "instagram": {
+                "font_size": 32,
+                "font_color": "white",
+                "background_color": "black@0.8",
+                "position": "center",
+                "margin_bottom": 0,
+                "outline_width": 2,
+                "max_chars_per_line": 40,
+                "font_family": "Impact"
+            },
+            "tiktok": {
+                "font_size": 36,
+                "font_color": "yellow",
+                "background_color": "black@0.6",
+                "position": "center",
+                "margin_bottom": 0,
+                "outline_width": 3,
+                "max_chars_per_line": 35,
+                "font_family": "Arial Black"
+            },
+            "elegante": {
+                "font_size": 30,
+                "font_color": "white",
+                "background_color": "black@0.9",
+                "position": "bottom_center",
+                "margin_bottom": 80,
+                "outline_width": 1,
+                "font_file": "./fonts/Roboto-Regular.ttf"
+            },
+            "gaming": {
+                "font_size": 34,
+                "font_color": "#00FF00",
+                "background_color": "black@0.8",
+                "position": "top_center",
+                "margin_bottom": 20,
+                "outline_width": 4,
+                "outline_color": "black",
+                "font_file": "./fonts/Orbitron-Bold.ttf"
+            }
+        }
+    }
 }

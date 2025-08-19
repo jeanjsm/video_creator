@@ -36,8 +36,8 @@ class GraphBuilder:
     def __init__(self):
         self.logger = get_logger("GraphBuilder")
 
-    def build(self, timeline: Timeline, settings: RenderSettings = None) -> FilterGraph:
-        """Constrói o filtergraph para a timeline"""
+    def build(self, timeline: Timeline, settings: RenderSettings = None, overlays_chromakey: List[Dict[str, Any]] = None) -> FilterGraph:
+        """Constrói o filtergraph para a timeline, incluindo overlays chromakey se fornecidos"""
         self.logger.info(
             "Construindo filtergraph para timeline com %d tracks de vídeo",
             len(timeline.video),
@@ -50,6 +50,15 @@ class GraphBuilder:
             for clip in track.clips:
                 graph.add_input(clip.media_path)
 
+        # Adicionar inputs de overlays chromakey
+        chroma_input_indices = []
+        if overlays_chromakey:
+            for overlay in overlays_chromakey:
+                chroma_path = Path(overlay["path"])
+                chroma_input_idx = len(graph.inputs)
+                graph.add_input(chroma_path)
+                chroma_input_indices.append((chroma_input_idx, overlay))
+
         # Adicionar inputs de áudio
         for track in timeline.audio:
             for clip in track.clips:
@@ -57,6 +66,38 @@ class GraphBuilder:
 
         # Construir filtros de vídeo
         self._build_video_filters(graph, timeline)
+
+        # Aplicar overlays chromakey após [vout]
+        if chroma_input_indices:
+            last_label = "vout"
+            for idx, overlay in chroma_input_indices:
+                chroma_key = overlay.get("chromakey", "green")
+                # Converter cor para formato hexadecimal se necessário
+                color_map = {"green": "0x00FF00", "blue": "0x0000FF"}
+                chroma_hex = color_map.get(chroma_key.lower(), chroma_key)
+                chroma_label = f"ck{idx}"
+                # chromakey filter
+                graph.add_filter(f"[{idx}:v]chromakey={chroma_hex}:0.1:0.2[{chroma_label}]")
+                # Posição
+                pos = overlay.get("position", "center")
+                pos_map = {
+                    "center": ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"),
+                    "top_left": ("0", "0"),
+                    "top_right": ("main_w-overlay_w", "0"),
+                    "bottom_left": ("0", "main_h-overlay_h"),
+                    "bottom_right": ("main_w-overlay_w", "main_h-overlay_h"),
+                }
+                x, y = pos_map.get(pos, ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"))
+                # Tempo de início
+                start = overlay.get("start", 0.0)
+                # Overlay com enable para tempo
+                out_label = f"vout{idx}"
+                graph.add_filter(f"[{last_label}][{chroma_label}]overlay=x={x}:y={y}:enable='gte(t,{start})'[{out_label}]")
+                last_label = out_label
+            # Atualizar saída final
+            graph.add_filter(f"[{last_label}]copy[vout_final]")
+        else:
+            graph.add_filter(f"[vout]copy[vout_final]")
 
         # Construir filtros de áudio se houver
         if timeline.audio:

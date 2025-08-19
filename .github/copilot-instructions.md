@@ -430,3 +430,5 @@ Nunca escreva código que não seja testável.
 Nunca deixe código quebrado.
 Sempre valide se o arquivo que foi alterado não quebrou os testes.
 Sempre valide se o arquivo que foi alterado não está quebrado, sem compilar ou com a identação incorreta.
+Nunca faça alterações que não sejam necessárias.
+Nunca faça importações no meio do código.

@@ -2,4 +2,9 @@
 pydantic-settings>=2.0.0
 pytest>=7.0.0
 flet>=0.20.0
-# Vosk será adicionado futuramente para speech-to-text
+
+# Speech-to-text com Vosk para legendas automáticas
+vosk>=0.3.45
+# Vosk requer um modelo de linguagem separado para download
+
+requests

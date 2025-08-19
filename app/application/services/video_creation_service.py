@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Serviço de criação de vídeo - Clean         # 3. Renderizar usando BatchRenderer
-        result_path = self.batch_renderer.render(timeline, settings, request.output_path)
-
-        self.logger.info("Vídeo criado com sucesso: %s", result_path)
-        return result_path"""
+app/application/services/video_creation_service.py
+Serviço de criação de vídeo atualizado com suporte a legendas
+"""
 
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -12,6 +10,7 @@ from dataclasses import dataclass
 
 from ...domain.models.timeline import Timeline, Track, Clip, RenderSettings
 from ...domain.models.effects import EffectRef
+from ...domain.models.subtitle import SubtitleStyle
 from ...rendering.graph_builder import GraphBuilder
 from ...rendering.cli_builder import CliBuilder
 from ...rendering.runner import Runner
@@ -20,12 +19,13 @@ from ...rendering.simple_renderer import SimpleRenderer
 from ...infra.media_io import MediaIO
 from ...infra.logging import get_logger
 from ...infra.paths import ffmpeg_bin
+from .transcription_service import TranscriptionService
 from fractions import Fraction
 
 
 @dataclass
 class VideoCreationRequest:
-    """Requisição para criação de vídeo"""
+    """Requisição para criação de vídeo com suporte a legendas"""
 
     audio_path: Path
     images: List[Path]
@@ -46,6 +46,13 @@ class VideoCreationRequest:
     cover_size: float = 1.0
     cover_position: str = "center"
 
+    # Configurações de legenda
+    enable_subtitles: bool = False
+    subtitle_style: Optional[SubtitleStyle] = None
+    vosk_model_path: Optional[Path] = None
+    subtitle_confidence_threshold: float = 0.5
+    subtitle_max_duration: float = 4.0
+
 
 class VideoCreationService:
     """Serviço para criação de vídeos seguindo Clean Architecture"""
@@ -53,30 +60,48 @@ class VideoCreationService:
     def __init__(self):
         self.logger = get_logger("VideoCreationService")
         self.media_io = MediaIO()
-        self.simple_renderer = SimpleRenderer()  # Usar renderizador simples
+        self.simple_renderer = SimpleRenderer()
+        self.transcription_service = None
 
     def create_video(self, request: VideoCreationRequest) -> Path:
         """Cria vídeo a partir da requisição"""
         self.logger.info(
-            "Iniciando criação de vídeo: saída=%s, imagens=%d, áudio=%s",
+            "Iniciando criação de vídeo: saída=%s, imagens=%d, áudio=%s, legendas=%s",
             request.output_path,
             len(request.images),
             request.audio_path,
+            request.enable_subtitles,
         )
 
-        # 1. Construir timeline a partir dos inputs
+        # 1. Inicializar serviço de transcrição se necessário
+        if request.enable_subtitles:
+            self._init_transcription_service(request.vosk_model_path)
+
+        # 2. Construir timeline a partir dos inputs
         timeline = self._build_timeline(request)
 
-        # 2. Construir render settings
+        # 3. Construir render settings
         settings = self._build_render_settings(request)
 
-        # 3. Renderizar usando SimpleRenderer
+        # 4. Renderizar usando SimpleRenderer (passar overlays_chromakey)
         result_path = self.simple_renderer.render(
-            timeline, settings, request.output_path
+            timeline, settings, request.output_path, overlays_chromakey=request.overlays_chromakey
         )
 
         self.logger.info("Vídeo criado com sucesso: %s", result_path)
         return result_path
+
+    def _init_transcription_service(self, model_path: Optional[Path]):
+        """Inicializa o serviço de transcrição"""
+        # Usar ConfigAwareTranscriptionService que lê config.json
+        from .config_aware_transcription_service import ConfigAwareTranscriptionService
+        self.transcription_service = ConfigAwareTranscriptionService(model_path)
+
+        if not self.transcription_service.is_available():
+            self.logger.warning(
+                "Serviço de transcrição não disponível. "
+                "Verifique se o Vosk está instalado e o modelo está presente."
+            )
 
     def _build_timeline(self, request: VideoCreationRequest) -> Timeline:
         """Constrói timeline a partir da requisição"""
@@ -90,13 +115,26 @@ class VideoCreationService:
             if audio_duration and current_time >= audio_duration:
                 break
 
+            clip_effects = self._get_image_effects(request, i)
+
+            # Adicionar efeito de legenda no primeiro clip se habilitado
+            if request.enable_subtitles and i == 0:
+                subtitle_effect = self._create_subtitle_effect(request)
+                if subtitle_effect:
+                    clip_effects.append(subtitle_effect)
+
+            # Adicionar chromas do config.json no primeiro clip
+            if i == 0:
+                chroma_effects = self._get_chroma_effects_from_config()
+                clip_effects.extend(chroma_effects)
+
             clip = Clip(
                 id=f"img_{i}",
                 media_path=image_path,
                 in_ms=0,
                 out_ms=int(request.segment_duration * 1000),
                 start_ms=int(current_time * 1000),
-                effects=self._get_image_effects(request, i),
+                effects=clip_effects,
             )
             video_clips.append(clip)
             current_time += request.segment_duration
@@ -142,8 +180,82 @@ class VideoCreationService:
             audio=[audio_track],
         )
 
+    def _create_subtitle_effect(self, request: VideoCreationRequest) -> Optional[EffectRef]:
+        """Cria efeito de legenda baseado na transcrição do áudio"""
+        if not self.transcription_service:
+            self.logger.warning("Serviço de transcrição não foi inicializado")
+            return None
+
+        if not self.transcription_service.is_available():
+            self.logger.warning("Serviço de transcrição não disponível para legendas")
+            return None
+
+        try:
+            # Transcrever áudio
+            self.logger.info("Transcrevendo áudio para legendas...")
+
+            # Usar transcribe_with_config se disponível (ConfigAwareTranscriptionService)
+            if hasattr(self.transcription_service, 'transcribe_with_config'):
+                transcription, style = self.transcription_service.transcribe_with_config(
+                    request.audio_path,
+                    override_params={
+                        "confidence_threshold": request.subtitle_confidence_threshold,
+                        "max_segment_duration": request.subtitle_max_duration
+                    }
+                )
+                # Usar estilo do request se especificado, senão usar do config
+                final_style = request.subtitle_style or style
+            else:
+                # Fallback para TranscriptionService básico
+                final_style = request.subtitle_style or SubtitleStyle()
+                transcription = self.transcription_service.transcribe_audio(
+                    request.audio_path,
+                    confidence_threshold=request.subtitle_confidence_threshold,
+                    max_segment_duration=request.subtitle_max_duration,
+                    max_chars_per_line=final_style.max_chars_per_line,
+                    max_words_per_line=final_style.max_words_per_line
+                )
+
+            if not transcription.segments:
+                self.logger.warning("Nenhum segmento de fala encontrado para legendas")
+                return None
+
+            self.logger.info(f"Transcrição concluída: {len(transcription.segments)} segmentos")
+
+            # Salvar arquivo SRT para análise
+            self._save_subtitle_file(transcription, request.output_path)
+
+            # Criar efeito de legenda
+            return EffectRef(
+                name="subtitle",
+                params={
+                    "segments": transcription.segments,
+                    "style": final_style,
+                },
+                target="video"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Erro na transcrição para legendas: {e}")
+            return None
+
+    def _save_subtitle_file(self, transcription, output_path: Path) -> None:
+        """Salva arquivo SRT das legendas no mesmo diretório do vídeo"""
+        try:
+            # Gerar caminho do arquivo SRT baseado no vídeo de saída
+            srt_path = output_path.with_suffix('.srt')
+
+            # Salvar arquivo SRT
+            transcription.save_as_srt(srt_path)
+
+            self.logger.info(f"Arquivo de legendas salvo: {srt_path}")
+            print(f"📄 Arquivo de legendas salvo: {srt_path}")
+
+        except Exception as e:
+            self.logger.error(f"Erro ao salvar arquivo de legendas: {e}")
+
     def _get_image_effects(
-        self, request: VideoCreationRequest, index: int
+            self, request: VideoCreationRequest, index: int
     ) -> List[EffectRef]:
         """Retorna efeitos para aplicar em uma imagem"""
         effects = []
@@ -206,6 +318,61 @@ class VideoCreationService:
             )
 
         return effects
+
+    def _get_chroma_effects_from_config(self) -> List[EffectRef]:
+        """Obtém efeitos de chroma do config.json"""
+        try:
+            from ...infra.config import get_config
+            config = get_config()
+            chromas = config.get("chromas", [])
+
+            if not chromas:
+                return []
+
+            self.logger.info(f"Encontrados {len(chromas)} chromas no config.json")
+
+            chroma_effects = []
+            for i, chroma in enumerate(chromas):
+                chroma_path = chroma.get("path")
+                if not chroma_path:
+                    continue
+
+                # Verificar se arquivo existe
+                from pathlib import Path
+                if not Path(chroma_path).exists():
+                    self.logger.warning(f"Arquivo chroma não encontrado: {chroma_path}")
+                    continue
+
+                self.logger.info(f"Adicionando chroma: {chroma_path}")
+
+                # Criar EffectRef para chroma
+                chroma_effect = EffectRef(
+                    name="chroma_overlay",
+                    params={
+                        "path": chroma_path,
+                        "start": chroma.get("start", 0),
+                        "opacity": chroma.get("opacity", 1.0),
+                        "tolerance": chroma.get("tolerance", 0.2),
+                        "position": chroma.get("position", "bottom_center"),
+                        "size": chroma.get("size", 1.0),
+                        "duration": chroma.get("duration"),  # Pode ser None
+                        "colorkey": chroma.get("colorkey", "0x00FF00"),
+                        "colorkey_similarity": chroma.get("colorkey_similarity", 0.35),
+                        "colorkey_blend": chroma.get("colorkey_blend", 0.10),
+                        "threshold": chroma.get("threshold", 0.03),
+                        "ratio": chroma.get("ratio", 8),
+                        "attack": chroma.get("attack", 5),
+                        "release": chroma.get("release", 300),
+                    },
+                    target="video"
+                )
+                chroma_effects.append(chroma_effect)
+
+            return chroma_effects
+
+        except Exception as e:
+            self.logger.error(f"Erro ao ler chromas do config.json: {e}")
+            return []
 
     def _build_render_settings(self, request: VideoCreationRequest) -> RenderSettings:
         """Constrói configurações de renderização"""

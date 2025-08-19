@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-SimpleRenderer - Renderizador que segue Clean Architecture
-Pipeline: Timeline -> FilterGraph -> FFmpeg Command -> Execution
+app/rendering/simple_renderer.py
+SimpleRenderer atualizado com suporte a legendas
 """
 
-
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import tempfile
 import subprocess
 import os
@@ -21,11 +20,12 @@ from app.plugins.builtin.effects.overlay import OverlayEffect
 from app.plugins.builtin.effects.logo import LogoEffect
 from app.plugins.builtin.effects.cover import CoverEffect
 from app.plugins.builtin.effects.chroma_overlay import ChromaOverlayEffect
+from app.plugins.builtin.effects.subtitle import SubtitleEffect
 
 
 class SimpleRenderer:
     """
-    Renderizador seguindo Clean Architecture
+    Renderizador seguindo Clean Architecture com suporte a legendas
 
     Pipeline:
     1. Timeline -> GraphBuilder -> FilterGraph
@@ -40,7 +40,7 @@ class SimpleRenderer:
         self.runner = Runner()
 
     def render(
-        self, timeline: Timeline, settings: RenderSettings, output_path: Path
+            self, timeline: Timeline, settings: RenderSettings, output_path: Path, overlays_chromakey: Optional[List[Dict[str, Any]]] = None
     ) -> Path:
         """
         Renderiza vídeo usando pipeline Clean Architecture
@@ -48,6 +48,7 @@ class SimpleRenderer:
         Etapas:
         1. Criar vídeo das imagens (concat approach)
         2. Adicionar áudio e efeitos visuais (filtergraph approach)
+        3. Adicionar legendas se especificado
         """
         self.logger.info("Iniciando renderização simples")
 
@@ -59,8 +60,8 @@ class SimpleRenderer:
                 video_temp = temp_path / "video_temp.mp4"
                 self._create_video_from_images(timeline, video_temp, settings)
 
-                # Etapa 2: Adicionar áudio e efeitos visuais
-                self._add_audio_and_effects(video_temp, timeline, output_path, settings)
+                # Etapa 2: Adicionar áudio e efeitos visuais (incluindo overlays chromakey)
+                self._add_audio_and_effects(video_temp, timeline, output_path, settings, overlays_chromakey)
 
                 return output_path
 
@@ -69,7 +70,7 @@ class SimpleRenderer:
             raise
 
     def _create_video_from_images(
-        self, timeline: Timeline, output_path: Path, settings: RenderSettings
+            self, timeline: Timeline, output_path: Path, settings: RenderSettings
     ):
         """Cria vídeo das imagens usando concat approach"""
 
@@ -79,13 +80,13 @@ class SimpleRenderer:
 
         clips = video_track.clips
 
-        # Buscar parâmetro de transição: settings -> efeito do primeiro clip -> fallback
+        # Buscar parâmetro de transição
         transition = getattr(settings, "transition", None)
         if not transition:
             # Procurar efeito de transição em qualquer clip (exceto o primeiro)
             for c in clips[1:]:
                 for eff in c.effects:
-                    if eff.name not in ("logo", "overlay", "volume"):
+                    if eff.name not in ("logo", "overlay", "volume", "subtitle"):
                         transition = eff.name
                         break
                 if transition:
@@ -94,18 +95,18 @@ class SimpleRenderer:
             transition = "fade"
 
         self.logger.info(
-            f"Forçando slideshow simples para evitar travamentos (transição: {transition})"
+            f"Criando slideshow simples (transição: {transition})"
         )
         self._create_simple_slideshow(
             clips, output_path, settings, transition=transition
         )
 
     def _create_simple_slideshow(
-        self,
-        clips: List[Clip],
-        output_path: Path,
-        settings: RenderSettings,
-        transition: str = "fade",
+            self,
+            clips: List[Clip],
+            output_path: Path,
+            settings: RenderSettings,
+            transition: str = "fade",
     ):
         """Cria slideshow simples com transição xfade entre imagens"""
         self.logger.info(
@@ -127,14 +128,10 @@ class SimpleRenderer:
         except Exception:
             width, height = 1280, 720
 
-        transition_duration = 1.0  # padrão 1s
+        transition_duration = 1.0
         segment_duration = (clips[0].out_ms - clips[0].in_ms) / 1000.0
         if segment_duration > 2:
             transition_duration = min(1.0, segment_duration * 0.3)
-
-        from ..infra.paths import ffmpeg_bin
-        import subprocess
-        from app.plugins.builtin.transitions.registry import get_transition
 
         cmd = [str(ffmpeg_bin()), "-y"]
         for clip in clips:
@@ -149,7 +146,7 @@ class SimpleRenderer:
                 f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[v{i}]"
             )
 
-        # Montar cadeia de transições usando classes
+        # Montar cadeia de transições
         import random
         from app.plugins.builtin.transitions.registry import TRANSITIONS
 
@@ -163,11 +160,13 @@ class SimpleRenderer:
                 offset = (segment_duration - transition_duration) * i
                 if transition == "random":
                     tname = random.choice(transition_names)
+                    from app.plugins.builtin.transitions.registry import get_transition
                     transition_obj = get_transition(tname)
                     self.logger.info(
                         f"Transição aleatória escolhida para par {i}: {tname}"
                     )
                 else:
+                    from app.plugins.builtin.transitions.registry import get_transition
                     transition_obj = get_transition(transition)
                 filter_str = transition_obj.build_filter(
                     duration=transition_duration, offset=offset
@@ -210,99 +209,96 @@ class SimpleRenderer:
             raise RuntimeError(f"Erro ao criar slideshow: {e}")
 
     def _add_audio_and_effects(
-        self,
-        video_path: Path,
-        timeline: Timeline,
-        output_path: Path,
-        settings: RenderSettings,
+            self,
+            video_path: Path,
+            timeline: Timeline,
+            output_path: Path,
+            settings: RenderSettings,
+            overlays_chromakey: Optional[List[Dict[str, Any]]] = None,
     ):
-        """Adiciona áudio e efeitos visuais usando pipeline da arquitetura"""
+        """Adiciona áudio e efeitos visuais (incluindo legendas e overlays chromakey)"""
 
         audio_tracks = timeline.audio
         if not audio_tracks:
             # Sem áudio, apenas copiar vídeo
             import shutil
-
             shutil.copy2(video_path, output_path)
             return
 
-        self.logger.info("Adicionando áudio ao vídeo")
-
-        # Tentar migrar para pipeline Clean Architecture para casos simples
-        # - Construímos um FilterGraph mínimo com video + audios
-        # - Se houver efeitos visuais complexos (logo/overlay/chroma), usamos fallback legacy
+        self.logger.info("Adicionando áudio e efeitos ao vídeo")
 
         # Detectar efeitos visuais no primeiro video clip
         video_track = timeline.video[0] if timeline.video else None
         visual_effects = []
+        subtitle_effect = None
+        chroma_effects = []
+
         if video_track and video_track.clips:
             for effect in video_track.clips[0].effects:
-                if effect.name in ["logo", "overlay", "cover"]:
+                if effect.name == "subtitle":
+                    subtitle_effect = effect
+                elif effect.name == "chroma_overlay":
+                    chroma_effects.append(effect)
+                elif effect.name in ["logo", "overlay", "cover"]:
                     visual_effects.append(effect)
 
-        if visual_effects:
-            # Casos complexos continuam usando implementação legacy por agora
+        # Adicionar overlays_chromakey passados como parâmetro
+        if overlays_chromakey:
+            self.logger.info(f"Processando {len(overlays_chromakey)} overlays chromakey do request")
+            for i, overlay in enumerate(overlays_chromakey):
+                # Converter para EffectRef para compatibilidade
+                from ..domain.models.effects import EffectRef
+                chroma_effect = EffectRef(
+                    name="chroma_overlay",
+                    params={
+                        "path": overlay["path"],
+                        "start": overlay.get("start", 0.0),
+                        "position": overlay.get("position", "center"),
+                        "chromakey": overlay.get("chromakey", "green"),
+                    },
+                    target="video"
+                )
+                chroma_effects.append(chroma_effect)
+
+        # Se há efeitos complexos OU legendas OU chromas, usar implementação estendida
+        if visual_effects or subtitle_effect or chroma_effects:
             self.logger.info(
-                "Efeitos visuais detectados — usando fallback legacy para garantir compatibilidade"
+                f"Efeitos detectados - Visual: {len(visual_effects)}, "
+                f"Legendas: {'Sim' if subtitle_effect else 'Não'}, "
+                f"Chromas: {len(chroma_effects)}"
             )
-            self._add_audio_to_video_legacy(video_path, timeline, output_path, settings)
+            self._add_audio_and_effects_extended(
+                video_path, timeline, output_path, settings, subtitle_effect, chroma_effects
+            )
             return
 
-        # Sem efeitos visuais complexos — usar GraphBuilder minimal + CliBuilder + Runner
-        graph = FilterGraph()
-        # input 0 = vídeo já renderizado
-        graph.add_input(video_path)
+        # Pipeline simples para casos sem efeitos visuais complexos
+        self._add_audio_simple(video_path, timeline, output_path, settings)
 
-        # adicionar inputs de áudio
+    def _add_audio_simple(
+            self,
+            video_path: Path,
+            timeline: Timeline,
+            output_path: Path,
+            settings: RenderSettings,
+    ):
+        """Pipeline simples para adicionar apenas áudio"""
+        audio_tracks = timeline.audio
+        cmd = [str(ffmpeg_bin()), "-y", "-i", str(video_path)]
+
+        # Adicionar inputs de áudio
         audio_inputs = []
-        for track in timeline.audio:
-            for clip in track.clips:
-                graph.add_input(clip.media_path)
-                audio_inputs.append(len(graph.inputs) - 1)  # índice do input
-
-        # Construir filtros de áudio semelhantes ao GraphBuilder
-        if len(audio_inputs) == 1:
-            graph.add_filter(f"[{audio_inputs[0]}:a]volume=1.0[aout]")
-        elif len(audio_inputs) > 1:
-            # Primeiro é narração, segundo é música de fundo
-            narration_idx = audio_inputs[0]
-            bg_idx = audio_inputs[1]
-            graph.add_filter(f"[{narration_idx}:a]volume=1.0[narr]")
-
-            # tentar detectar volume em efeitos do bg (se existir)
-            bg_volume = 0.2
-            try:
-                bg_clip = timeline.audio[1].clips[0]
-                for eff in getattr(bg_clip, "effects", []):
-                    if eff.name == "volume":
-                        bg_volume = eff.params.get("volume", bg_volume)
-                        break
-            except Exception:
-                pass
-
-            graph.add_filter(f"[{bg_idx}:a]volume={bg_volume}[bg]")
-            graph.add_filter(
-                "[narr][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-            )
-
-        # Construir comando manualmente para evitar problemas com filtergraph
-        from ..infra.paths import ffmpeg_bin
-
-        cmd = [str(ffmpeg_bin()), "-y"]
-
-        # Adicionar inputs
-        cmd.extend(["-i", str(video_path)])
-        for track in timeline.audio:
+        for track in audio_tracks:
             for clip in track.clips:
                 cmd.extend(["-i", str(clip.media_path)])
+                audio_inputs.append(len(audio_inputs) + 1)
 
-        # Para casos simples, mapear diretamente
+        # Mapear streams
         if len(audio_inputs) == 1:
-            # Um áudio apenas
             cmd.extend(["-map", "0:v", "-map", "1:a"])
             cmd.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"])
         else:
-            # Múltiplos áudios - usar filtro de áudio simples
+            # Múltiplos áudios - mixar
             audio_filter = f"[1:a]volume=1.0[narr];[2:a]volume=0.2[bg];[narr][bg]amix=inputs=2:duration=first[aout]"
             cmd.extend(["-filter_complex", audio_filter])
             cmd.extend(["-map", "0:v", "-map", "[aout]"])
@@ -320,106 +316,27 @@ class SimpleRenderer:
                     subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                 ),
             )
-
-            if result.returncode == 0:
-                self.logger.info("Áudio adicionado com sucesso")
-            else:
-                self.logger.error(f"Erro na mixagem de áudio: {result.stderr}")
+            if result.returncode != 0:
                 raise RuntimeError(f"Falha na mixagem de áudio: {result.stderr}")
-
-        except subprocess.TimeoutExpired:
-            self.logger.error("Timeout na mixagem de áudio")
-            raise RuntimeError("Timeout na mixagem de áudio")
         except Exception as e:
-            self.logger.error(f"Erro inesperado na mixagem: {e}")
             raise RuntimeError(f"Erro na mixagem de áudio: {e}")
 
-    def _build_simple_slideshow_command(
-        self,
-        inputs: List[Path],
-        duration: float,
-        output_path: Path,
-        settings: RenderSettings,
-    ) -> List[str]:
-        """Constrói comando para slideshow simples usando CliBuilder pattern"""
-        from ..infra.paths import ffmpeg_bin
-
-        cmd = [str(ffmpeg_bin()), "-y"]
-
-        # Adicionar todas as imagens como inputs
-        for input_path in inputs:
-            cmd.extend(["-loop", "1", "-t", str(duration), "-i", str(input_path)])
-
-        # Filtro de vídeo simples
-        filter_parts = []
-
-        # Normalizar todas as imagens
-        for i in range(len(inputs)):
-            filter_parts.append(
-                f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[v{i}]"
-            )
-
-        if len(inputs) > 1:
-            # Concatenação simples
-            concat_inputs = "".join([f"[v{i}]" for i in range(len(inputs))])
-            filter_parts.append(f"{concat_inputs}concat=n={len(inputs)}:v=1:a=0[vout]")
-            final_output = "[vout]"
-        else:
-            final_output = "[v0]"
-
-        cmd.extend(["-filter_complex", ";".join(filter_parts)])
-        cmd.extend(["-map", final_output])
-
-        # Configurações de codec
-        cmd.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
-                "-r",
-                "30",
-                str(output_path),
-            ]
-        )
-
-        return cmd
-
-    def _add_audio_to_video_legacy(
-        self,
-        video_path: Path,
-        timeline: Timeline,
-        output_path: Path,
-        settings: RenderSettings,
+    def _add_audio_and_effects_extended(
+            self,
+            video_path: Path,
+            timeline: Timeline,
+            output_path: Path,
+            settings: RenderSettings,
+            subtitle_effect: Optional[object] = None,
+            chroma_effects: List[object] = None,
     ):
-        """Adiciona áudio ao vídeo com suporte a logo, overlays e capa"""
+        """Pipeline estendido com efeitos visuais e legendas"""
 
         audio_tracks = timeline.audio
-        if not audio_tracks:
-            # Sem áudio, apenas copiar vídeo
-            import shutil
-
-            shutil.copy2(video_path, output_path)
-            return
-
-        self.logger.info("Adicionando áudio ao vídeo")
-
-        # Calcular duração baseada apenas na narração (primeiro áudio)
-        narration_duration = 0.0
+        audio_duration = 0.0
         if audio_tracks and audio_tracks[0].clips:
-            # Usar apenas o primeiro clip de áudio (narração)
             first_clip = audio_tracks[0].clips[0]
-            narration_duration = (first_clip.out_ms - first_clip.in_ms) / 1000.0
-
-        if narration_duration == 0:
-            # Fallback: usar duração do vídeo temporário
-            narration_duration = (
-                self._get_video_duration_legacy(Path(video_path)) or 120.0
-            )
+            audio_duration = (first_clip.out_ms - first_clip.in_ms) / 1000.0
 
         cmd = [str(ffmpeg_bin()), "-y", "-i", str(video_path)]
 
@@ -428,79 +345,63 @@ class SimpleRenderer:
         for track in audio_tracks:
             for clip in track.clips:
                 cmd.extend(["-i", str(clip.media_path)])
-                audio_inputs.append(
-                    len(audio_inputs) + 1
-                )  # Índice do input (0 é vídeo)
+                audio_inputs.append(len(audio_inputs) + 1)
 
-        # Coletar todos os efeitos visuais do primeiro clip
+        # Coletar efeitos visuais do primeiro clip
         video_track = timeline.video[0] if timeline.video else None
         visual_effects = []
 
         if video_track and video_track.clips:
-            for effect in video_track.clips[0].effects:  # Apenas primeiro clip
-                if effect.name in ["logo", "overlay", "cover", "overlay_chromakey"]:
+            for effect in video_track.clips[0].effects:
+                if effect.name in ["logo", "overlay", "cover"]:
                     visual_effects.append(effect)
-                    self.logger.info(
-                        f"[DEBUG] Efeito visual encontrado: {effect.name} com params: {effect.params}"
-                    )
 
-        # Adicionar inputs para efeitos visuais
+        # Adicionar inputs para efeitos visuais e chromas
         input_counter = len(audio_inputs) + 1
         effect_inputs = {}
 
+        # Adicionar inputs para efeitos visuais tradicionais
         for effect in visual_effects:
             effect_path = effect.params.get("path")
             if effect_path and Path(effect_path).exists():
                 if effect.name == "overlay":
-                    # Para overlay de vídeo, calcular quantos loops são necessários baseado na narração
-                    overlay_duration = self._get_video_duration_legacy(
-                        Path(effect_path)
-                    )
-                    if overlay_duration and narration_duration:
-                        loops_needed = max(
-                            1, int((narration_duration / overlay_duration) + 1)
-                        )
-                        self.logger.info(
-                            f"Overlay: {overlay_duration}s, Narração: {narration_duration}s, Loops: {loops_needed}"
-                        )
-                        cmd.extend(
-                            ["-stream_loop", str(loops_needed), "-i", str(effect_path)]
-                        )
+                    overlay_duration = self._get_video_duration_legacy(Path(effect_path))
+                    if overlay_duration and audio_duration:
+                        loops_needed = max(1, int((audio_duration / overlay_duration) + 1))
+                        cmd.extend(["-stream_loop", str(loops_needed), "-i", str(effect_path)])
                     else:
-                        self.logger.warning(
-                            f"Não foi possível calcular duração, usando 8 loops"
-                        )
                         cmd.extend(["-stream_loop", "8", "-i", str(effect_path)])
-                    effect_inputs[effect.name] = input_counter
-                    input_counter += 1
-                elif effect.name == "overlay_chromakey":
-                    # Overlay de vídeo chromakey: adicionar input normalmente
-                    cmd.extend(["-i", str(effect_path)])
-                    # Armazenar todos os overlays chromakey (pode haver vários)
-                    if "overlay_chromakey" not in effect_inputs:
-                        effect_inputs["overlay_chromakey"] = []
-                    effect_inputs["overlay_chromakey"].append((input_counter, effect))
-                    input_counter += 1
                 else:
-                    # Para logo e capa (imagens), adicionar normalmente
                     cmd.extend(["-i", str(effect_path)])
-                    effect_inputs[effect.name] = input_counter
-                    input_counter += 1
+                effect_inputs[effect.name] = input_counter
+                input_counter += 1
 
-        # Construir filtros separadamente
+        # Adicionar inputs para efeitos de chroma
+        chroma_inputs = {}
+        if chroma_effects:
+            self.logger.info(f"Adicionando {len(chroma_effects)} inputs para chromas")
+            for i, chroma_effect in enumerate(chroma_effects):
+                chroma_path = chroma_effect.params.get("path")
+                if chroma_path and Path(chroma_path).exists():
+                    cmd.extend(["-i", str(chroma_path)])
+                    chroma_inputs[f"chroma_{i}"] = input_counter
+                    input_counter += 1
+                    self.logger.info(f"Chroma {i}: {chroma_path} -> input {input_counter-1}")
+
+        # Construir filtros
         filter_parts = []
         current_video = "[0:v]"
 
-        # Aplicar efeitos visuais em ordem: overlay -> logo -> capa
+        # Aplicar efeitos visuais primeiro
         for effect in visual_effects:
             if effect.name == "overlay" and effect.name in effect_inputs:
                 input_idx = effect_inputs[effect.name]
                 overlay_input = f"[{input_idx}:v]"
-                overlay_effect = OverlayEffect(effect.params)
+                overlay_effect_obj = OverlayEffect(effect.params)
                 input_label = current_video.strip("[]")
                 overlay_label = overlay_input.strip("[]")
                 output_label = "overlay_out"
-                filter_snippet = overlay_effect.build_filter(
+                filter_snippet = overlay_effect_obj.build_filter(
                     input_label, overlay_label, output_label
                 )
                 filter_parts.append(filter_snippet)
@@ -508,11 +409,11 @@ class SimpleRenderer:
             elif effect.name == "logo" and effect.name in effect_inputs:
                 input_idx = effect_inputs[effect.name]
                 logo_input = f"[{input_idx}:v]"
-                logo_effect = LogoEffect(effect.params)
+                logo_effect_obj = LogoEffect(effect.params)
                 input_label = current_video.strip("[]")
                 logo_label = logo_input.strip("[]")
                 output_label = "logo_out"
-                filter_snippet = logo_effect.build_filter(
+                filter_snippet = logo_effect_obj.build_filter(
                     input_label, logo_label, output_label
                 )
                 filter_parts.append(filter_snippet)
@@ -520,181 +421,155 @@ class SimpleRenderer:
             elif effect.name == "cover" and effect.name in effect_inputs:
                 input_idx = effect_inputs[effect.name]
                 cover_input = f"[{input_idx}:v]"
-                cover_effect = CoverEffect(effect.params)
+                cover_effect_obj = CoverEffect(effect.params)
                 input_label = current_video.strip("[]")
                 cover_label = cover_input.strip("[]")
                 output_label = "cover_out"
-                filter_snippet = cover_effect.build_filter(
+                filter_snippet = cover_effect_obj.build_filter(
                     input_label, cover_label, output_label
                 )
                 filter_parts.append(filter_snippet)
                 current_video = f"[{output_label}]"
 
-        # Integrar chroma overlays do config.json
-        import json
-        from app.infra.media_io import has_audio_stream
+        # Aplicar efeitos de chroma após os efeitos visuais tradicionais
+        if chroma_effects:
+            self.logger.info(f"Aplicando {len(chroma_effects)} efeitos de chroma")
+            for i, chroma_effect in enumerate(chroma_effects):
+                chroma_key = f"chroma_{i}"
+                if chroma_key in chroma_inputs:
+                    input_idx = chroma_inputs[chroma_key]
 
-        config_path = Path(__file__).parents[2] / "config.json"
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_data = json.load(f)
-            chromas = config_data.get("chromas", [])
-            for idx, chroma in enumerate(chromas):
-                chroma_effect = ChromaOverlayEffect(chroma)
-                chroma_path = chroma.get("path")
-                if chroma_path:
-                    cmd.extend(["-i", str(chroma_path)])
-                    chroma_video_label = f"{current_video.strip('[]')}"
-                    chroma_overlay_label = f"{input_counter}:v"
-                    v_out = f"chroma_v{idx}"
-                    a_out = f"chroma_a{idx}"
-                    # Sempre remover o áudio do chroma overlay: nunca adicionar [N:a] do chroma
-                    filter_snippet = chroma_effect.build_filter(
-                        chroma_video_label,
-                        chroma_overlay_label,
-                        None,
-                        None,
-                        v_out,
-                        None,
+                    # Usar ChromaOverlayEffect ao invés de implementação manual
+                    chroma_effect_obj = ChromaOverlayEffect(chroma_effect.params)
+
+                    main_video_label = current_video.strip("[]")
+                    overlay_label = f"{input_idx}:v"
+                    output_label = f"chroma_out_{i}"
+
+                    # Verificar se há áudio para ducking
+                    main_audio_label = None
+                    overlay_audio_label = None
+
+                    # Se temos áudio e o overlay tem áudio, aplicar ducking
+                    if len(audio_inputs) > 0:
+                        # Verificar se o overlay tem stream de áudio
+                        overlay_path = chroma_effect.params.get("path")
+                        if overlay_path and self._has_audio_stream(Path(overlay_path)):
+                            main_audio_label = f"{audio_inputs[0]}:a" if audio_inputs else None
+                            overlay_audio_label = f"{input_idx}:a"
+
+                    chroma_filter = chroma_effect_obj.build_filter(
+                        main_video_label=main_video_label,
+                        overlay_label=overlay_label,
+                        main_audio_label=main_audio_label,
+                        overlay_audio_label=overlay_audio_label,
+                        v_out=output_label,
+                        a_out=f"chroma_audio_{i}" if main_audio_label and overlay_audio_label else None
                     )
-                    filter_parts.append(filter_snippet)
-                    current_video = f"[{v_out}]"
-                    input_counter += 1
 
-        # Se há filtros visuais, definir saída de vídeo
-        if filter_parts:
-            video_output = current_video
-        else:
-            video_output = "0:v"
+                    filter_parts.append(chroma_filter)
+                    current_video = f"[{output_label}]"
 
-        # Filtro de áudio (mix)
-        chroma_audio_output = None
-        chroma_present = False
-        # Detectar se algum filter_parts contém chroma_a (áudio do chroma)
-        for part in filter_parts:
-            if "chroma_a" in part:
-                chroma_present = True
-                # Pega o último label de chroma_a gerado
-                import re
+                    # Se foi aplicado ducking de áudio, atualizar a referência de áudio
+                    if main_audio_label and overlay_audio_label:
+                        # Substituir a primeira entrada de áudio pela saída com ducking
+                        audio_output = f"[chroma_audio_{i}]"
+                        # Marcar que já temos áudio processado
+                        audio_inputs = []  # Limpar para evitar processamento duplo
 
-                m = re.findall(r"\[chroma_a(\d+)\]", part)
-                if m:
-                    chroma_audio_output = f"[chroma_a{m[-1]}]"
-                else:
-                    chroma_audio_output = "[chroma_a0]"
-        if not chroma_present:
-            if len(audio_inputs) == 1:
-                audio_output = f"{audio_inputs[0]}:a"
-            elif len(audio_inputs) > 1:
-                for i, input_idx in enumerate(audio_inputs):
-                    volume = "1.0" if i == 0 else "0.2"
-                    filter_parts.append(f"[{input_idx}:a]volume={volume}[a{i}]")
-                mix_inputs = "".join([f"[a{i}]" for i in range(len(audio_inputs))])
-                filter_parts.append(
-                    f"{mix_inputs}amix=inputs={len(audio_inputs)}:duration=first[aout]"
-                )
-                audio_output = "[aout]"
-            else:
-                audio_output = None
+                    self.logger.info(f"Chroma {i}: usando ChromaOverlayEffect com parâmetros {chroma_effect.params}")
+
+        # Aplicar legendas por último (depois de todos os outros efeitos)
+        if subtitle_effect:
+            self.logger.info("Aplicando efeito de legendas")
+            segments = subtitle_effect.params.get("segments", [])
+            style = subtitle_effect.params.get("style", None)
+
+            if segments:
+                subtitle_effect_obj = SubtitleEffect(segments, style)
+                input_label = current_video.strip("[]")
+                output_label = "subtitle_out"
+                subtitle_filter = subtitle_effect_obj.build_filter(input_label, output_label)
+                filter_parts.append(subtitle_filter)
+                current_video = f"[{output_label}]"
+
+        # Filtros de áudio
+        audio_output = None
+        if len(audio_inputs) == 1:
+            audio_output = f"{audio_inputs[0]}:a"
+        elif len(audio_inputs) > 1:
+            for i, input_idx in enumerate(audio_inputs):
+                volume = "1.0" if i == 0 else "0.2"
+                filter_parts.append(f"[{input_idx}:a]volume={volume}[a{i}]")
+            mix_inputs = "".join([f"[a{i}]" for i in range(len(audio_inputs))])
+            filter_parts.append(
+                f"{mix_inputs}amix=inputs={len(audio_inputs)}:duration=first[aout]"
+            )
+            audio_output = "[aout]"
+
+        # Se não temos audio_inputs mas existe audio_output definido pelo chroma overlay, mantê-lo
+        # (isso acontece quando o ducking foi aplicado)
 
         # Aplicar filtros se necessário
         if filter_parts:
             cmd.extend(["-filter_complex", ";".join(filter_parts)])
-            cmd.extend(["-map", video_output])
-            if chroma_present and chroma_audio_output:
-                cmd.extend(["-map", chroma_audio_output])
-            elif not chroma_present and audio_output:
+            cmd.extend(["-map", current_video])
+            if audio_output:
                 cmd.extend(["-map", audio_output])
         else:
-            # Sem filtros, mapear diretamente
             cmd.extend(["-map", "0:v"])
             if audio_inputs:
                 cmd.extend(["-map", f"{audio_inputs[0]}:a"])
 
         # Configurações finais
-        cmd.extend(
-            [
-                "-c:v",
-                "libx264" if filter_parts else "copy",  # Recodificar se há filtros
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-movflags",
-                "+faststart",
-                "-t",
-                str(narration_duration),  # Cortar na duração da narração
-                str(output_path),
-            ]
-        )
+        cmd.extend([
+            "-c:v", "libx264" if filter_parts else "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            "-t", str(audio_duration),
+            str(output_path),
+        ])
 
-        # Executar usando Runner
+        # Executar
         try:
-            self.runner.run(cmd, timeout=180)  # 3 minutos para overlays
+            self.runner.run(cmd, timeout=300)  # 5 minutos para efeitos + legendas
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Erro FFmpeg: {e.stderr}")
             raise RuntimeError(f"FFmpeg falhou: {e.stderr}")
-        except subprocess.TimeoutExpired as e:
-            self.logger.error(f"Timeout após 180s: {' '.join(map(str, cmd))}")
-            raise RuntimeError(f"Comando FFmpeg excedeu timeout de 180s")
+        except subprocess.TimeoutExpired:
+            self.logger.error("Timeout na renderização com efeitos")
+            raise RuntimeError("Timeout na renderização")
 
-    def _get_video_duration_legacy(self, video_path: Path) -> Optional[float]:
-        """
-        Método legacy - TODO: migrar para GraphBuilder + CliBuilder + Runner
-        Obtém a duração de um arquivo de vídeo em segundos
-        """
+    def _has_audio_stream(self, video_path: Path) -> bool:
+        """Verifica se o arquivo de vídeo tem stream de áudio"""
         try:
             cmd = [
                 str(ffmpeg_bin()),
-                "-v",
-                "quiet",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
+                "-v", "quiet",
+                "-show_streams",
+                "-select_streams", "a",
+                "-of", "csv=p=0",
                 str(video_path),
             ]
-
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            return result.returncode == 0 and result.stdout.strip()
+        except Exception:
+            return False
 
-            if result.returncode == 0 and result.stdout.strip():
-                try:
-                    duration = float(result.stdout.strip())
-                    self.logger.info(f"Duração de {video_path.name}: {duration}s")
-                    return duration
-                except ValueError:
-                    pass
-
-            # Fallback usando ffprobe
+    def _get_video_duration_legacy(self, video_path: Path) -> Optional[float]:
+        """Obtém duração de vídeo (método legacy)"""
+        try:
             cmd = [
-                str(ffmpeg_bin()).replace("ffmpeg.exe", "ffprobe.exe"),
-                "-v",
-                "quiet",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "csv=p=0",
+                str(ffmpeg_bin()),
+                "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
                 str(video_path),
             ]
-
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
             if result.returncode == 0 and result.stdout.strip():
-                duration = float(result.stdout.strip())
-                self.logger.info(f"Duração de {video_path.name} (ffprobe): {duration}s")
-                return duration
-
+                return float(result.stdout.strip())
             return None
-
-        except Exception as e:
-            self.logger.warning(f"Não foi possível obter duração de {video_path}: {e}")
+        except Exception:
             return None
-
-    # TODO: Próxima etapa de migração
-    # - Converter _add_audio_to_video_legacy para usar GraphBuilder
-    # - Converter _get_video_duration_legacy para usar Runner
-    # - Remover todos os métodos legacy após migração completa
-    #
-    # A arquitetura final será:
-    # render() -> GraphBuilder.build() -> CliBuilder.build_command() -> Runner.run()
-    # Isso separará completamente as responsabilidades seguindo Clean Architecture
