@@ -54,9 +54,11 @@ class SubtitleEffect:
                 f"borderw={self.style.outline_width}",
                 f"bordercolor={self.style.outline_color}",
                 "box=1",
-                f"boxcolor={self.style.background_color}",
-                "boxborderw=10"
             ]
+            # Adicionar boxcolor apenas se background_color estiver definido e não for vazio/none
+            if getattr(self.style, "background_color", None) not in (None, "", "none", "None"):
+                drawtext_parts.append(f"boxcolor={self.style.background_color}")
+            drawtext_parts.append("boxborderw=10")
 
             # Adicionar parâmetros de fonte apenas se não estiver vazio
             if font_params:

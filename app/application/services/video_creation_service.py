@@ -222,9 +222,6 @@ class VideoCreationService:
 
             self.logger.info(f"Transcrição concluída: {len(transcription.segments)} segmentos")
 
-            # Salvar arquivo SRT para análise
-            self._save_subtitle_file(transcription, request.output_path)
-
             # Criar efeito de legenda
             return EffectRef(
                 name="subtitle",
@@ -238,21 +235,6 @@ class VideoCreationService:
         except Exception as e:
             self.logger.error(f"Erro na transcrição para legendas: {e}")
             return None
-
-    def _save_subtitle_file(self, transcription, output_path: Path) -> None:
-        """Salva arquivo SRT das legendas no mesmo diretório do vídeo"""
-        try:
-            # Gerar caminho do arquivo SRT baseado no vídeo de saída
-            srt_path = output_path.with_suffix('.srt')
-
-            # Salvar arquivo SRT
-            transcription.save_as_srt(srt_path)
-
-            self.logger.info(f"Arquivo de legendas salvo: {srt_path}")
-            print(f"📄 Arquivo de legendas salvo: {srt_path}")
-
-        except Exception as e:
-            self.logger.error(f"Erro ao salvar arquivo de legendas: {e}")
 
     def _get_image_effects(
             self, request: VideoCreationRequest, index: int

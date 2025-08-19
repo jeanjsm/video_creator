@@ -42,7 +42,8 @@ class TranscriptionService:
             confidence_threshold: float = 0.5,
             max_segment_duration: float = 4.0,
             max_chars_per_line: int = 60,
-            max_words_per_line: int = 4
+            max_words_per_line: int = 4,
+            sync_offset_ms: int = -200
     ) -> TranscriptionResult:
         """
         Transcreve áudio para legendas
@@ -66,7 +67,7 @@ class TranscriptionService:
 
             # Otimizar segmentos para legendas (máximo 1 linha)
             optimized_segments = self._optimize_segments_for_subtitles(
-                segments, max_segment_duration, max_chars_per_line, max_words_per_line
+                segments, max_segment_duration, max_chars_per_line, max_words_per_line, sync_offset_ms
             )
 
             self.logger.info(f"Transcrição concluída: {len(optimized_segments)} segmentos")
@@ -226,7 +227,8 @@ class TranscriptionService:
             segments: List[SubtitleSegment],
             max_duration: float,
             max_chars_per_line: int,
-            max_words_per_line: int
+            max_words_per_line: int,
+            sync_offset_ms: int = -200
     ) -> List[SubtitleSegment]:
         """
         Otimiza segmentos para exibição como legendas com limite de palavras por linha
@@ -234,7 +236,7 @@ class TranscriptionService:
         if not segments:
             return []
 
-        self.logger.info(f"Otimizando {len(segments)} segmentos para legendas (max_words: {max_words_per_line})")
+        self.logger.info(f"Otimizando {len(segments)} segmentos para legendas (max_words: {max_words_per_line}, sync_offset: {sync_offset_ms}ms)")
 
         # Concatenar todos os segmentos em uma lista de palavras com timing individual
         all_words = []
@@ -261,17 +263,19 @@ class TranscriptionService:
         if not all_words:
             return []
 
+        # Aplicar correção de sincronização configurável
         # Agora agrupar palavras em segmentos respeitando os limites
         optimized = []
         current_words = []
-        current_start_ms = all_words[0]['start_ms']
-        current_end_ms = all_words[0]['end_ms']
+        current_start_ms = max(0, all_words[0]['start_ms'] + sync_offset_ms)  # Não pode ser negativo
+        current_end_ms = all_words[0]['end_ms'] + sync_offset_ms
         current_confidence_sum = 0
 
         for word_data in all_words:
             potential_words = current_words + [word_data['text']]
             potential_text = " ".join(potential_words)
-            potential_duration_ms = word_data['end_ms'] - current_start_ms
+            potential_end_ms = word_data['end_ms'] + sync_offset_ms
+            potential_duration_ms = potential_end_ms - current_start_ms
             potential_duration_sec = potential_duration_ms / 1000.0
 
             # Critérios para quebrar segmento
@@ -287,39 +291,47 @@ class TranscriptionService:
                 current_text = " ".join(current_words)
                 avg_confidence = current_confidence_sum / len(current_words) if current_words else 0
 
+                # Garantir que o timing seja válido
+                final_start_ms = max(0, current_start_ms)
+                final_end_ms = max(final_start_ms + 500, current_end_ms)  # Mínimo 500ms de duração
+
                 optimized.append(SubtitleSegment(
-                    start_ms=current_start_ms,
-                    end_ms=current_end_ms,
+                    start_ms=final_start_ms,
+                    end_ms=final_end_ms,
                     text=current_text.strip(),
                     confidence=avg_confidence
                 ))
 
-                self.logger.debug(f"Segmento: '{current_text}' ({len(current_words)} palavras) - {current_start_ms}ms to {current_end_ms}ms")
+                self.logger.debug(f"Segmento: '{current_text}' ({len(current_words)} palavras) - {final_start_ms}ms to {final_end_ms}ms")
 
                 # Iniciar novo segmento
                 current_words = [word_data['text']]
-                current_start_ms = word_data['start_ms']
-                current_end_ms = word_data['end_ms']
+                current_start_ms = max(0, word_data['start_ms'] + sync_offset_ms)
+                current_end_ms = word_data['end_ms'] + sync_offset_ms
                 current_confidence_sum = word_data['confidence']
             else:
                 # Adicionar palavra ao segmento atual
                 current_words = potential_words
-                current_end_ms = word_data['end_ms']  # Estender até a última palavra
+                current_end_ms = potential_end_ms  # Estender até a última palavra
                 current_confidence_sum += word_data['confidence']
 
         # Adicionar último segmento
         if current_words:
             current_text = " ".join(current_words)
             avg_confidence = current_confidence_sum / len(current_words) if current_words else 0
+
+            # Garantir que o timing seja válido
+            final_start_ms = max(0, current_start_ms)
+            final_end_ms = max(final_start_ms + 500, current_end_ms)  # Mínimo 500ms de duração
+
             optimized.append(SubtitleSegment(
-                start_ms=current_start_ms,
-                end_ms=current_end_ms,
+                start_ms=final_start_ms,
+                end_ms=final_end_ms,
                 text=current_text.strip(),
                 confidence=avg_confidence
             ))
 
-            self.logger.debug(f"Último segmento: '{current_text}' ({len(current_words)} palavras) - {current_start_ms}ms to {current_end_ms}ms")
+            self.logger.debug(f"Último segmento: '{current_text}' ({len(current_words)} palavras) - {final_start_ms}ms to {final_end_ms}ms")
 
-        self.logger.info(f"Segmentação concluída: {len(optimized)} segmentos otimizados")
+        self.logger.info(f"Segmentação concluída: {len(optimized)} segmentos otimizados com correção de sincronização ({sync_offset_ms}ms)")
         return optimized
-
